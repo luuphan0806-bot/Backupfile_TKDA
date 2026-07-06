@@ -1,0 +1,12 @@
+# Runtime dependencies. Kept in sync with [project.dependencies] in
+# pyproject.toml, which remains the authoritative source (used by
+# `pip install -e .` and by tests/packaging). This file exists for tooling
+# that expects a plain requirements.txt.
+openpyxl>=3.1.5
+flet==0.85.3
+flet-charts==0.85.3
+
+# Dev/build extras (see pyproject.toml [project.optional-dependencies]):
+#   pip install -e ".[dev,build]"
+# dev:   pytest>=8.0
+# build: flet-cli==0.85.3

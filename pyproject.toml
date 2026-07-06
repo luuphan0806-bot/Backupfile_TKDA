@@ -1,0 +1,30 @@
+[project]
+name = "scan-backup-manager"
+version = "0.1.0"
+description = "Windows server-side scan backup manager for SMB workstations."
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "openpyxl>=3.1.5",
+    "flet==0.85.3",
+    "flet-charts==0.85.3",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+]
+build = [
+    "flet-cli==0.85.3",
+    "pyinstaller>=6.0",
+    "pywin32>=306; sys_platform == 'win32'",
+]
+
+[project.scripts]
+scan-backup-manager = "scan_backup_manager.ui.app:run"
+scan-backup-service-console = "scan_backup_manager.windows_service:run_console"
+scan-backup-service = "scan_backup_manager.windows_service:run_service_command_line"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
