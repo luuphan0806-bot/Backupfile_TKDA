@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 import flet as ft
 
+from ....config_excel import ConfigExcelService
 from ....models import (
     Client,
     DirectoryLevel,
@@ -249,11 +252,18 @@ def _build_paper_formats_section(ctx) -> ft.Control:
 
 def _build_clients_section(ctx) -> ft.Control:
     db = ctx.db
+    excel = ConfigExcelService(db)
     code_field = ft.TextField(label="Mã máy trạm", width=160)
     share_field = ft.TextField(label="Thư mục chia sẻ máy trạm", width=320)
     notes_field = ft.TextField(label="Ghi chú", width=220)
     enabled_checkbox = ft.Checkbox(label="Kích hoạt", value=True)
     error_text = ft.Text("", color=ft.Colors.ERROR)
+    picker = ctx.view_state.setdefault("settings_clients", {}).get("_picker")
+    if picker is None:
+        picker = ft.FilePicker()
+        ctx.view_state["settings_clients"]["_picker"] = picker
+    if picker not in ctx.page.overlay:
+        ctx.page.overlay.append(picker)
 
     def save_client(_event) -> None:
         code = (code_field.value or "").strip()
@@ -268,6 +278,32 @@ def _build_clients_section(ctx) -> ft.Control:
     def delete_client(code: str) -> None:
         db.delete_client(ctx.project_id, code)
         ctx.refresh()
+
+    async def import_excel(_event) -> None:
+        result = await picker.pick_files(
+            dialog_title="Chọn file Excel máy trạm",
+            allowed_extensions=["xlsx", "xlsm"],
+        )
+        if not result:
+            return
+        try:
+            count = excel.import_clients(ctx.project_id, Path(result[0].path))
+        except Exception as exc:  # noqa: BLE001 - show import errors in UI
+            error_text.value = f"Nhập Excel thất bại: {exc}"
+            error_text.color = ft.Colors.ERROR
+            ctx.page.update()
+            return
+        error_text.value = f"Đã nhập {count} máy trạm từ Excel."
+        error_text.color = ft.Colors.PRIMARY
+        ctx.refresh()
+
+    def export_excel(_event) -> None:
+        project = db.get_project(ctx.project_id)
+        output_dir = Path(project.reports_dir if project else "data/reports")
+        path = excel.export_clients(ctx.project_id, output_dir)
+        error_text.value = f"Đã xuất Excel: {path}"
+        error_text.color = ft.Colors.PRIMARY
+        ctx.page.update()
 
     clients = db.list_clients(ctx.project_id)
     table = ft.DataTable(
@@ -293,7 +329,14 @@ def _build_clients_section(ctx) -> ft.Control:
             controls=[
                 ft.Row(controls=[code_field, share_field, notes_field, enabled_checkbox], wrap=True),
                 error_text,
-                ft.FilledButton("Thêm / cập nhật máy trạm", on_click=save_client),
+                ft.Row(
+                    wrap=True,
+                    controls=[
+                        ft.FilledButton("Thêm / cập nhật máy trạm", on_click=save_client),
+                        ft.OutlinedButton("Nhập Excel", icon=ft.Icons.UPLOAD_FILE, on_click=import_excel),
+                        ft.OutlinedButton("Xuất Excel", icon=ft.Icons.DOWNLOAD, on_click=export_excel),
+                    ],
+                ),
                 table,
             ],
         ),
@@ -302,12 +345,19 @@ def _build_clients_section(ctx) -> ft.Control:
 
 def _build_personnel_section(ctx) -> ft.Control:
     db = ctx.db
+    excel = ConfigExcelService(db)
     code_field = ft.TextField(label="Mã nhân sự", width=140)
     name_field = ft.TextField(label="Họ tên", width=220)
     role_field = ft.TextField(label="Vai trò/chức danh", width=200)
     pin_field = ft.TextField(label="PIN khởi tạo/đặt lại (6 số)", width=200, password=True)
     enabled_checkbox = ft.Checkbox(label="Kích hoạt", value=True)
     error_text = ft.Text("", color=ft.Colors.ERROR)
+    picker = ctx.view_state.setdefault("settings_personnel", {}).get("_picker")
+    if picker is None:
+        picker = ft.FilePicker()
+        ctx.view_state["settings_personnel"]["_picker"] = picker
+    if picker not in ctx.page.overlay:
+        ctx.page.overlay.append(picker)
 
     def save_personnel(_event) -> None:
         code = (code_field.value or "").strip()
@@ -329,6 +379,32 @@ def _build_personnel_section(ctx) -> ft.Control:
     def delete_personnel(personnel_id: int) -> None:
         db.delete_personnel(personnel_id)
         ctx.refresh()
+
+    async def import_excel(_event) -> None:
+        result = await picker.pick_files(
+            dialog_title="Chọn file Excel nhân sự",
+            allowed_extensions=["xlsx", "xlsm"],
+        )
+        if not result:
+            return
+        try:
+            count = excel.import_personnel(ctx.project_id, Path(result[0].path))
+        except Exception as exc:  # noqa: BLE001 - show import errors in UI
+            error_text.value = f"Nhập Excel thất bại: {exc}"
+            error_text.color = ft.Colors.ERROR
+            ctx.page.update()
+            return
+        error_text.value = f"Đã nhập {count} nhân sự từ Excel."
+        error_text.color = ft.Colors.PRIMARY
+        ctx.refresh()
+
+    def export_excel(_event) -> None:
+        project = db.get_project(ctx.project_id)
+        output_dir = Path(project.reports_dir if project else "data/reports")
+        path = excel.export_personnel(ctx.project_id, output_dir)
+        error_text.value = f"Đã xuất Excel: {path}"
+        error_text.color = ft.Colors.PRIMARY
+        ctx.page.update()
 
     personnel = db.list_personnel(ctx.project_id)
     table = ft.DataTable(
@@ -354,7 +430,14 @@ def _build_personnel_section(ctx) -> ft.Control:
             controls=[
                 ft.Row(controls=[code_field, name_field, role_field, pin_field, enabled_checkbox], wrap=True),
                 error_text,
-                ft.FilledButton("Thêm / cập nhật nhân sự", on_click=save_personnel),
+                ft.Row(
+                    wrap=True,
+                    controls=[
+                        ft.FilledButton("Thêm / cập nhật nhân sự", on_click=save_personnel),
+                        ft.OutlinedButton("Nhập Excel", icon=ft.Icons.UPLOAD_FILE, on_click=import_excel),
+                        ft.OutlinedButton("Xuất Excel", icon=ft.Icons.DOWNLOAD, on_click=export_excel),
+                    ],
+                ),
                 table,
             ],
         ),
