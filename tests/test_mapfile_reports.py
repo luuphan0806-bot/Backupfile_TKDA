@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 from openpyxl import Workbook
@@ -73,6 +74,44 @@ def test_mapfile_done_flag_survives_reconcile_and_reimport(tmp_path: Path) -> No
     assert second_import_id != first_import_id
     second_row = db.list_mapfile_rows(second_import_id)[0]
     assert second_row["is_done"] == 1
+
+
+def test_mapfile_row_cell_update_rebuilds_expected_path_and_reconciles(tmp_path: Path) -> None:
+    db = Database(tmp_path / "app.sqlite3")
+    project_id = make_project(db, tmp_path)
+    service = MapfileService(db)
+
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.append(["project", "year", "case_type", "case_number", "file_name"])
+    sheet.append(["CSDL_SOHOA_A", "2023", "HS", "123", "1.pdf"])
+    mapfile_path = tmp_path / "mapfile.xlsx"
+    workbook.save(mapfile_path)
+    import_id = service.import_excel(project_id, mapfile_path)
+    row = db.list_mapfile_rows(import_id)[0]
+
+    db.upsert_backup_file(
+        project_id=project_id,
+        client_code="SCAN01",
+        source_path=r"\\SCAN01\share\CSDL_SOHOA_A\2023\HS\456\1.pdf",
+        project_code="CSDL_SOHOA_A",
+        relative_project_path="2023/HS/456/1.pdf",
+        dest_path=r"D:\backup\CSDL_SOHOA_A\2023\HS\456\1.pdf",
+        file_size=100,
+        source_mtime="2026-07-07T00:00:00+00:00",
+        status="LOCKED",
+    )
+
+    status = service.update_row_cell(project_id, row["id"], "case_number", "456")
+    updated = db.get_mapfile_row(row["id"])
+
+    assert status == "MATCHED"
+    assert json.loads(updated["raw_json"])["case_number"] == "456"
+    assert updated["expected_relative_path"] == str(
+        Path("CSDL_SOHOA_A") / "2023" / "HS" / "456" / "1.pdf"
+    )
+    assert updated["record_key"] == "2023/HS/456"
+    assert updated["status"] == "MATCHED"
 
 
 def test_report_export_creates_excel(tmp_path: Path) -> None:

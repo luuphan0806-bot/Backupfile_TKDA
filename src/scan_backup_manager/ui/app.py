@@ -6,7 +6,7 @@ from ..constants import APP_NAME, runtime_db_path
 from ..db import Database
 from ..logging_config import get_logger, setup_logging
 from .state import AppState
-from .theme import apply_theme
+from .theme import SIDEBAR_SLIDE_CURVE, SIDEBAR_SLIDE_MS, apply_theme, content_switcher
 from .views import audit as audit_view
 from .views import global_settings as settings_view
 from .views import overview as overview_view
@@ -24,6 +24,10 @@ class ScanBackupFletApp:
         self.state = AppState.create(self.db)
         self.current_project_id: int | None = None
         self.nav_index = NAV_OVERVIEW
+        self.sidebar_collapsed = False
+        self.navigation_rail: ft.NavigationRail | None = None
+        self.sidebar_container: ft.Container | None = None
+        self.sidebar_toggle: ft.IconButton | None = None
 
         self.page.title = APP_NAME
         self.page.window.width = 1360
@@ -385,11 +389,19 @@ class ScanBackupFletApp:
         self._build_shell()
 
     def _build_shell(self) -> None:
+        self.sidebar_collapsed = self.current_project_id is not None
+        self.sidebar_toggle = ft.IconButton(
+            icon=ft.Icons.MENU if self.sidebar_collapsed else ft.Icons.MENU_OPEN,
+            tooltip="Mở rộng menu" if self.sidebar_collapsed else "Thu gọn menu",
+            on_click=lambda _e: self._set_sidebar_collapsed(not self.sidebar_collapsed),
+        )
         rail = ft.NavigationRail(
             selected_index=self.nav_index,
-            label_type=ft.NavigationRailLabelType.ALL,
-            min_width=96,
+            extended=not self.sidebar_collapsed,
+            label_type=ft.NavigationRailLabelType.NONE,
+            min_width=72,
             min_extended_width=220,
+            leading=self.sidebar_toggle,
             destinations=[
                 ft.NavigationRailDestination(icon=ft.Icons.SPACE_DASHBOARD_OUTLINED, selected_icon=ft.Icons.SPACE_DASHBOARD, label="Tổng Quan"),
                 ft.NavigationRailDestination(icon=ft.Icons.FOLDER_OUTLINED, selected_icon=ft.Icons.FOLDER, label="Danh sách dự án"),
@@ -397,6 +409,13 @@ class ScanBackupFletApp:
                 ft.NavigationRailDestination(icon=ft.Icons.HISTORY, selected_icon=ft.Icons.HISTORY, label="Nhật ký hệ thống"),
             ],
             on_change=self._on_nav_change,
+        )
+        self.navigation_rail = rail
+        self.sidebar_container = ft.Container(
+            width=72 if self.sidebar_collapsed else 220,
+            clip_behavior=ft.ClipBehavior.HARD_EDGE,
+            animate=ft.Animation(SIDEBAR_SLIDE_MS, SIDEBAR_SLIDE_CURVE),
+            content=rail,
         )
 
         top_bar = ft.Row(
@@ -418,7 +437,8 @@ class ScanBackupFletApp:
             ],
         )
 
-        self.content_area = ft.Container(expand=True, padding=20)
+        self.content_switcher = content_switcher()
+        self.content_area = ft.Container(expand=True, padding=20, content=self.content_switcher)
         self._render_content()
 
         layout = ft.Column(
@@ -433,27 +453,46 @@ class ScanBackupFletApp:
                 ft.Row(
                     expand=True,
                     spacing=0,
-                    controls=[rail, ft.VerticalDivider(width=1), self.content_area],
+                    controls=[
+                        self.sidebar_container,
+                        ft.VerticalDivider(width=1),
+                        self.content_area,
+                    ],
                 ),
             ],
         )
         self.set_root(layout)
 
+    def _set_sidebar_collapsed(self, collapsed: bool, *, update: bool = True) -> None:
+        self.sidebar_collapsed = collapsed
+        if self.navigation_rail is None or self.sidebar_container is None:
+            return
+        self.navigation_rail.extended = not collapsed
+        self.sidebar_container.width = 72 if collapsed else 220
+        if self.sidebar_toggle is not None:
+            self.sidebar_toggle.icon = ft.Icons.MENU if collapsed else ft.Icons.MENU_OPEN
+            self.sidebar_toggle.tooltip = "Mở rộng menu" if collapsed else "Thu gọn menu"
+        if update:
+            self.page.update()
+
     def _on_nav_change(self, event: ft.ControlEvent) -> None:
         self.nav_index = event.control.selected_index
         self.current_project_id = None
+        self._set_sidebar_collapsed(False, update=False)
         self._render_content()
         self.page.update()
 
     def _render_content(self) -> None:
-        if self.nav_index == NAV_OVERVIEW:
-            self.content_area.content = overview_view.build(self)
+        if self.current_project_id is not None:
+            self.content_switcher.content = console_view.build(self, self.current_project_id)
+        elif self.nav_index == NAV_OVERVIEW:
+            self.content_switcher.content = overview_view.build(self)
         elif self.nav_index == NAV_PROJECTS:
-            self.content_area.content = project_list_view.build(self)
+            self.content_switcher.content = project_list_view.build(self)
         elif self.nav_index == NAV_SETTINGS:
-            self.content_area.content = settings_view.build(self)
+            self.content_switcher.content = settings_view.build(self)
         elif self.nav_index == NAV_AUDIT:
-            self.content_area.content = audit_view.build(self)
+            self.content_switcher.content = audit_view.build(self)
 
     def refresh_content(self) -> None:
         self._render_content()
@@ -461,11 +500,12 @@ class ScanBackupFletApp:
 
     def open_project(self, project_id: int) -> None:
         self.current_project_id = project_id
-        self.content_area.content = console_view.build(self, project_id)
-        self.page.update()
+        self.content_switcher.content = console_view.build(self, project_id)
+        self._set_sidebar_collapsed(True)
 
     def close_project(self) -> None:
         self.current_project_id = None
+        self._set_sidebar_collapsed(False, update=False)
         self.refresh_content()
 
 

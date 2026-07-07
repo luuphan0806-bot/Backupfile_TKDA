@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Any
 
@@ -131,3 +132,153 @@ class MapfileService:
             return "MATCHED"
         self.db.update_mapfile_row_status(row_id, "MISSING", "Not found in backup log")
         return "MISSING"
+
+    def update_row_cell(
+        self,
+        project_id: int,
+        row_id: int,
+        column_name: str,
+        value: Any,
+    ) -> str:
+        row = self.db.get_mapfile_row(row_id)
+        if not row:
+            raise ValueError(f"Mapfile row not found: {row_id}")
+        raw = dict(json.loads(row["raw_json"]))
+        raw[column_name] = normalize_cell(value)
+
+        profile = self.db.get_mapfile_profile(project_id)
+        expected = normalize_expected_path(
+            raw.get(profile.project_column, ""),
+            raw.get(profile.year_column, ""),
+            raw.get(profile.case_type_column, ""),
+            raw.get(profile.case_number_column, ""),
+            raw.get(profile.file_name_column, ""),
+        )
+        self.db.update_mapfile_row_source(row_id, raw, expected)
+        status = self.reconcile_row(project_id, row_id)
+        self.db.record_audit(
+            "MAPFILE_ROW_UPDATED",
+            f"Updated mapfile row {row_id} column {column_name}",
+            project_id=project_id,
+        )
+        return status
+
+    def add_manual_record(
+        self,
+        project_id: int,
+        record_parts: list[str],
+        *,
+        file_name: str = "1.pdf",
+    ) -> int:
+        project = self.db.get_project(project_id)
+        if not project:
+            raise ValueError(f"Project not found: {project_id}")
+        clean_parts = [str(part).strip() for part in record_parts]
+        if not clean_parts or any(not part for part in clean_parts):
+            raise ValueError("Cần nhập đầy đủ thông tin hồ sơ.")
+
+        profile = self.db.get_mapfile_profile(project_id)
+        directory_levels = self.db.list_directory_levels(project_id)
+        raw: dict[str, Any] = {
+            profile.project_column: project.project_code,
+            profile.file_name_column: normalize_cell(file_name or "1.pdf"),
+        }
+        if clean_parts:
+            raw[profile.year_column] = clean_parts[0]
+        if len(clean_parts) > 1:
+            raw[profile.case_type_column] = clean_parts[1]
+        if len(clean_parts) > 2:
+            raw[profile.case_number_column] = "/".join(clean_parts[2:])
+        for index, value in enumerate(clean_parts):
+            if index < len(directory_levels):
+                raw[directory_levels[index].display_name] = value
+
+        expected = str(
+            Path(project.project_code.strip()) / Path(*clean_parts) / raw[profile.file_name_column]
+        )
+        import_id = self.db.latest_mapfile_import_id(project_id)
+        if import_id is None:
+            import_id = self.db.create_mapfile_import(
+                project_id,
+                profile.id or 0,
+                "manual://system-mapfile",
+            )
+        row_id = self.db.append_mapfile_row(import_id, raw, expected)
+        self.reconcile_row(project_id, row_id)
+        self.db.record_audit(
+            "MAPFILE_ROW_ADDED",
+            f"Added manual mapfile row {row_id}",
+            project_id=project_id,
+        )
+        return row_id
+
+    def duplicate_manual_record(self, project_id: int, source_record_key: str) -> str:
+        source_parts = [
+            part for part in source_record_key.replace("\\", "/").strip("/").split("/") if part
+        ]
+        if not source_parts:
+            raise ValueError("Không xác định được hồ sơ cần sao chép.")
+        existing_keys = {
+            record["record_key"]
+            for record, _index in self._iter_system_records(project_id)
+        }
+        new_parts = self._next_record_parts(source_parts, existing_keys)
+        self.add_manual_record(project_id, new_parts)
+        new_record_key = "/".join(new_parts)
+
+        workflow = self.db.get_record_workflow(project_id, source_record_key)
+        if workflow.get("id") is not None:
+            self.db.save_record_workflow(
+                project_id=project_id,
+                record_key=new_record_key,
+                scanner_id=workflow.get("scanner_id"),
+                scan_date=workflow.get("scan_date", ""),
+                checker_id=workflow.get("checker_id"),
+                check_date=workflow.get("check_date", ""),
+                record_status=workflow.get("record_status", "NOT_STARTED"),
+                notes=workflow.get("notes", ""),
+                paper_statuses=[
+                    {
+                        "paper_format_id": paper["paper_format_id"],
+                        "scan_status": paper["scan_status"],
+                        "scan_pages": str(paper["scan_pages"]),
+                        "check_pages": str(paper["check_pages"]),
+                        "notes": paper["notes"],
+                    }
+                    for paper in workflow["paper_statuses"]
+                ],
+            )
+        return new_record_key
+
+    def _iter_system_records(self, project_id: int):
+        offset = 0
+        limit = 500
+        while True:
+            records, total = self.db.list_system_records_page(
+                project_id, limit=limit, offset=offset
+            )
+            for index, record in enumerate(records, start=offset):
+                yield record, index
+            offset += len(records)
+            if offset >= total or not records:
+                break
+
+    @staticmethod
+    def _next_record_parts(source_parts: list[str], existing_keys: set[str]) -> list[str]:
+        prefix = source_parts[:-1]
+        last = source_parts[-1]
+        if last.isdigit():
+            width = len(last)
+            number = int(last)
+            while True:
+                number += 1
+                candidate = [*prefix, str(number).zfill(width)]
+                if "/".join(candidate) not in existing_keys:
+                    return candidate
+        suffix = 1
+        while True:
+            candidate_last = f"{last}-copy" if suffix == 1 else f"{last}-copy-{suffix}"
+            candidate = [*prefix, candidate_last]
+            if "/".join(candidate) not in existing_keys:
+                return candidate
+            suffix += 1

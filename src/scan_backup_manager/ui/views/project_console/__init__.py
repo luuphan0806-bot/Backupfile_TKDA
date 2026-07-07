@@ -2,14 +2,30 @@ from __future__ import annotations
 
 import flet as ft
 
-TAB_DASHBOARD, TAB_MAPFILE, TAB_TASKS, TAB_STATISTICS, TAB_SETTINGS = range(5)
-TAB_LABELS = ["Bảng điều hành", "Danh mục hồ sơ", "Công việc", "Thống kê", "Cấu hình"]
+from ...theme import content_switcher
+
+(
+    TAB_DASHBOARD,
+    TAB_MAPFILE,
+    TAB_SYSTEM_MAPFILE,
+    TAB_TASKS,
+    TAB_STATISTICS,
+    TAB_SETTINGS,
+) = range(6)
+TAB_LABELS = [
+    "Bảng điều hành",
+    "Danh mục hồ sơ",
+    "Mapfile hệ thống",
+    "Công việc",
+    "Thống kê",
+    "Cấu hình",
+]
 
 
 class ConsoleContext:
     """Owns the sub-navigation state for one open project's console.
 
-    Created fresh every time a project is opened from the shell; the 5
+    Created fresh every time a project is opened from the shell; the 6
     sub-tabs are plain function modules (dashboard_tab, mapfile_tab, ...)
     that take this context and return a control, mirroring the top-level
     shell's own render pattern.
@@ -28,11 +44,15 @@ class ConsoleContext:
         self.tab_index = TAB_DASHBOARD
         self.view_state: dict[str, dict] = {}
         self.root = ft.Column(expand=True, spacing=14)
-        self.content_container = ft.Container(expand=True)
+        self.content_container = content_switcher()
 
     def switch_tab(self, index: int) -> None:
+        if index == self.tab_index:
+            return
         self.tab_index = index
-        self.refresh()
+        self.project = self.db.get_project(self.project_id)
+        self.render()
+        self.page.update()
 
     def refresh(self) -> None:
         self.project = self.db.get_project(self.project_id)
@@ -49,11 +69,19 @@ class ConsoleContext:
         ]
 
     def _build_tab_content(self) -> ft.Control:
-        from . import dashboard_tab, mapfile_tab, statistics_tab, settings_tab, tasks_tab
+        from . import (
+            dashboard_tab,
+            mapfile_tab,
+            settings_tab,
+            statistics_tab,
+            system_mapfile_tab,
+            tasks_tab,
+        )
 
         builders = {
             TAB_DASHBOARD: dashboard_tab.build,
             TAB_MAPFILE: mapfile_tab.build,
+            TAB_SYSTEM_MAPFILE: system_mapfile_tab.build,
             TAB_TASKS: tasks_tab.build,
             TAB_STATISTICS: statistics_tab.build,
             TAB_SETTINGS: settings_tab.build,

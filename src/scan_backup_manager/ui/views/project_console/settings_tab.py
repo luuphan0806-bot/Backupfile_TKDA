@@ -2,7 +2,15 @@ from __future__ import annotations
 
 import flet as ft
 
-from ....models import Client, DirectoryLevel, MapfileProfile, Personnel, Project, ProjectSettings
+from ....models import (
+    Client,
+    DirectoryLevel,
+    MapfileProfile,
+    PaperFormat,
+    Personnel,
+    Project,
+    ProjectSettings,
+)
 from ...theme import LEVEL_LABELS
 
 LEVEL_TYPES = ["YEAR4", "ENUM", "INTEGER", "TEXT"]
@@ -207,6 +215,111 @@ def _build_mapfile_section(ctx) -> ft.Control:
     )
 
 
+def _build_paper_formats_section(ctx) -> ft.Control:
+    db = ctx.db
+    formats = db.list_paper_formats(ctx.project_id)
+    code_field = ft.TextField(label="Mã khổ giấy", hint_text="A4, A3, A2...", width=140)
+    name_field = ft.TextField(label="Tên hiển thị", width=200)
+    order_field = ft.TextField(label="Thứ tự", value="0", width=100)
+    separate_scan = ft.Checkbox(label="Scan riêng", value=True)
+    requires_check = ft.Checkbox(label="Yêu cầu check", value=True)
+    enabled = ft.Checkbox(label="Đang sử dụng", value=True)
+    status_text = ft.Text("", color=ft.Colors.ERROR)
+
+    def edit_format(paper_format: PaperFormat) -> None:
+        code_field.value = paper_format.code
+        name_field.value = paper_format.display_name
+        order_field.value = str(paper_format.sort_order)
+        separate_scan.value = paper_format.requires_separate_scan
+        requires_check.value = paper_format.requires_check
+        enabled.value = paper_format.enabled
+        status_text.value = f"Đang chỉnh sửa {paper_format.code}."
+        status_text.color = ft.Colors.PRIMARY
+        ctx.page.update()
+
+    def save_format(_event) -> None:
+        try:
+            sort_order = int(order_field.value or "0")
+            db.save_paper_format(
+                PaperFormat(
+                    None,
+                    ctx.project_id,
+                    code_field.value or "",
+                    name_field.value or "",
+                    bool(separate_scan.value),
+                    bool(requires_check.value),
+                    bool(enabled.value),
+                    sort_order,
+                )
+            )
+        except ValueError as exc:
+            status_text.value = str(exc)
+            status_text.color = ft.Colors.ERROR
+            ctx.page.update()
+            return
+        ctx.refresh()
+
+    table = ft.DataTable(
+        columns=[
+            ft.DataColumn(ft.Text("Mã")),
+            ft.DataColumn(ft.Text("Tên hiển thị")),
+            ft.DataColumn(ft.Text("Scan riêng")),
+            ft.DataColumn(ft.Text("Yêu cầu check")),
+            ft.DataColumn(ft.Text("Sử dụng")),
+            ft.DataColumn(ft.Text("Thứ tự"), numeric=True),
+            ft.DataColumn(ft.Text("")),
+        ],
+        rows=[
+            ft.DataRow(
+                cells=[
+                    ft.DataCell(ft.Text(item.code, weight=ft.FontWeight.BOLD)),
+                    ft.DataCell(ft.Text(item.display_name)),
+                    ft.DataCell(ft.Text("Có" if item.requires_separate_scan else "Không")),
+                    ft.DataCell(ft.Text("Có" if item.requires_check else "Không")),
+                    ft.DataCell(ft.Text("Có" if item.enabled else "Không")),
+                    ft.DataCell(ft.Text(str(item.sort_order))),
+                    ft.DataCell(
+                        ft.IconButton(
+                            icon=ft.Icons.EDIT_OUTLINED,
+                            tooltip="Chỉnh sửa",
+                            on_click=lambda _e, current=item: edit_format(current),
+                        )
+                    ),
+                ]
+            )
+            for item in formats
+        ],
+    )
+
+    return _section(
+        "Danh mục khổ giấy",
+        "Cấu hình A4, A3 hoặc các khổ khác cần theo dõi riêng trong từng hồ sơ.",
+        ft.Column(
+            spacing=10,
+            controls=[
+                ft.Row(
+                    wrap=True,
+                    controls=[
+                        code_field,
+                        name_field,
+                        order_field,
+                        separate_scan,
+                        requires_check,
+                        enabled,
+                    ],
+                ),
+                status_text,
+                ft.FilledButton(
+                    "Thêm / cập nhật khổ giấy",
+                    icon=ft.Icons.SAVE,
+                    on_click=save_format,
+                ),
+                table,
+            ],
+        ),
+    )
+
+
 def _build_clients_section(ctx) -> ft.Control:
     db = ctx.db
     code_field = ft.TextField(label="Mã máy trạm", width=160)
@@ -361,6 +474,7 @@ def build(ctx) -> ft.Control:
     tab_items = [
         ("Dự án & cây thư mục", ft.Icons.ACCOUNT_TREE_OUTLINED, _build_project_section),
         ("Danh mục Excel", ft.Icons.TABLE_VIEW_OUTLINED, _build_mapfile_section),
+        ("Khổ giấy", ft.Icons.DESCRIPTION_OUTLINED, _build_paper_formats_section),
         ("Máy trạm", ft.Icons.COMPUTER_OUTLINED, _build_clients_section),
         ("Nhân sự", ft.Icons.GROUP_OUTLINED, _build_personnel_section),
         ("Vận hành", ft.Icons.TUNE_OUTLINED, _build_operations_section),
