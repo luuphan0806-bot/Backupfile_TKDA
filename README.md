@@ -1,223 +1,361 @@
 # Scan Backup Manager
 
-Scan Backup Manager is a Windows desktop app that backs up PDF scan files from
-workstation SMB shares into a canonical server backup tree. The console
-manages **multiple projects at once** -- each with its own workstations,
-personnel, mapfile mapping, directory tree, and polling schedule. The UI is
-built with [Flet](https://flet.dev) (Python + Flutter rendering).
+Scan Backup Manager là ứng dụng desktop chạy trên Windows, dùng để sao lưu các
+file PDF scan từ thư mục chia sẻ SMB của máy trạm về cây thư mục backup chuẩn
+trên máy chủ. Ứng dụng hỗ trợ nhiều dự án cùng lúc, mỗi dự án có cấu hình máy
+trạm, nhân sự, mapfile, cây thư mục, lịch quét và báo cáo riêng.
 
-## Project Structure
+Giao diện được xây dựng bằng Flet, dữ liệu lưu bằng SQLite, báo cáo xuất ra Excel.
+
+## Tính năng chính
+
+- Quản lý nhiều dự án scan trong cùng một ứng dụng.
+- Khai báo máy trạm SMB/share cần quét file PDF.
+- Cấu hình cây thư mục bắt buộc theo từng dự án.
+- Backup file scan về thư mục đích, kiểm tra hash và khóa file sau khi sao lưu.
+- Phát hiện file sai cấu trúc, file trùng và xung đột backup.
+- Import mapfile Excel để đối chiếu hồ sơ cần scan với file đã backup.
+- Theo dõi nghiệp vụ Scan / Check, người thực hiện, ngày thực hiện và số trang.
+- Xuất báo cáo Excel hằng ngày và thống kê năng suất.
+- Có Windows Service để chạy pipeline backup độc lập với giao diện.
+
+## Cấu trúc thư mục
 
 ```text
-scan-backup-manager/
+Backupfile_TKDA/
 ├── README.md
 ├── requirements.txt
 ├── pyproject.toml
-├── .env.example
-├── .gitignore
 ├── main.py
+├── service_main.py
 ├── src/
 │   └── scan_backup_manager/
 │       ├── __main__.py
+│       ├── backup.py
 │       ├── constants.py
-│       ├── models.py
 │       ├── db.py
 │       ├── filesystem.py
-│       ├── backup.py
 │       ├── mapfile.py
 │       ├── reports.py
+│       ├── service_core.py
 │       ├── statistics.py
-│       ├── i18n.py
-│       ├── logging_config.py
+│       ├── windows_service.py
 │       └── ui/
-│           ├── app.py
-│           ├── state.py
-│           ├── theme.py
-│           ├── workers.py
-│           ├── project_scheduler.py
-│           └── views/
-│               ├── overview.py
-│               ├── project_list.py
-│               ├── project_console/   (6 tabs: dashboard, mapfile, system mapfile, tasks, statistics, settings)
-│               ├── global_settings.py
-│               └── audit.py
-├── tests/
 ├── scripts/
 │   └── seed_mock_data.py
+├── tests/
 ├── packaging/
-├── data/    (created at runtime, git-ignored)
-└── logs/    (created at runtime, git-ignored)
+└── data/          # Tạo khi chạy app, không commit lên Git
 ```
 
-| Path | Purpose |
-| --- | --- |
-| `README.md` | Project overview, setup, architecture, usage. |
-| `requirements.txt` | Plain pip dependency list, mirrors `pyproject.toml`. |
-| `pyproject.toml` | Authoritative package metadata, dependencies, console script, pytest config. |
-| `.env.example` | Placeholder -- the app has no required environment variables today (see file). |
-| `.gitignore` | Files/folders Git should not track. |
-| `main.py` | Convenience launcher (`python main.py`), same as `python -m scan_backup_manager`. |
-| `src/scan_backup_manager/db.py` | SQLite schema, migrations, and all CRUD/query methods. |
-| `src/scan_backup_manager/backup.py` | Core backup logic: share scanning, copy/verify/lock, conflict handling, on-demand single-file backup. |
-| `src/scan_backup_manager/mapfile.py` | Excel mapfile import and reconciliation against backed-up files. |
-| `src/scan_backup_manager/reports.py` | Daily and statistics Excel report export. |
-| `src/scan_backup_manager/statistics.py` | Productivity/completion/latency queries used by the Thống kê tab. |
-| `src/scan_backup_manager/filesystem.py` | Low-level file discovery, validation, hashing, and copy helpers. |
-| `src/scan_backup_manager/i18n.py` | Vietnamese/English translation strings (auth screens). |
-| `src/scan_backup_manager/logging_config.py` | Rotating file logger under `logs/app.log`. |
-| `src/scan_backup_manager/ui/` | Flet desktop UI: app shell, navigation, per-screen views. |
-| `tests/` | Pytest unit/integration tests for the backend modules. |
-| `scripts/seed_mock_data.py` | Builds a local demo environment with sample projects/data. |
-| `packaging/build.ps1` | Wraps `flet pack` to produce a standalone `.exe` (see Build below). |
-| `data/` | Runtime SQLite database and per-project files (created automatically). |
-| `logs/` | Rotating application log file (created automatically). |
+## Yêu cầu cài đặt
 
-## Quick Start
+- Windows 10/11.
+- Git.
+- Python 3.11 trở lên, khuyến nghị Python 3.12.
+- Kết nối mạng để tải thư viện Python trong lần cài đầu tiên.
+
+Nếu chưa có Python, cài bằng PowerShell:
+
+```powershell
+winget install --id Python.Python.3.12 -e
+```
+
+Sau khi cài Python, đóng PowerShell đang mở và mở lại cửa sổ mới.
+
+Kiểm tra Python:
+
+```powershell
+python --version
+pip --version
+```
+
+Nếu Windows vẫn báo `Python was not found` hoặc tự mở Microsoft Store, hãy tắt
+alias Python tại:
+
+```text
+Settings > Apps > Advanced app settings > App execution aliases
+```
+
+Tắt hai mục:
+
+```text
+python.exe
+python3.exe
+```
+
+Sau đó mở PowerShell mới và kiểm tra lại `python --version`.
+
+## Cài đặt lần đầu
+
+Vào thư mục project:
+
+```powershell
+cd D:\CODE\Backup\Backupfile_TKDA
+```
+
+Tạo môi trường ảo:
 
 ```powershell
 python -m venv .venv
+```
+
+Kích hoạt môi trường ảo:
+
+```powershell
 .\.venv\Scripts\Activate.ps1
-pip install -e ".[dev,build]"
+```
+
+Nếu PowerShell chặn file `Activate.ps1`, chạy lệnh này một lần:
+
+```powershell
+Set-ExecutionPolicy -Scope CurrentUser RemoteSigned
+```
+
+Sau đó kích hoạt lại:
+
+```powershell
+.\.venv\Scripts\Activate.ps1
+```
+
+Cài thư viện:
+
+```powershell
+python -m pip install -e ".[dev,build]"
+```
+
+## Chạy ứng dụng
+
+Sau khi đã cài đặt xong, chạy:
+
+```powershell
 python -m scan_backup_manager
 ```
 
-The app creates local runtime data under `data/` by default:
+Hoặc chạy bằng file tiện ích:
 
-- `data/scan_backup_manager.sqlite3`
-- per-project `reports/`, `conflict_archive/`, and `staging/` directories, as
-  configured in each project's own settings
+```powershell
+python main.py
+```
 
-At startup, choose **Admin** or **Project personnel**. Personnel sign in with
-project code, personnel code, and a six-digit PIN created by Admin. The
-initial Admin password is:
+Nếu không muốn kích hoạt môi trường ảo, có thể chạy trực tiếp bằng Python trong
+`.venv`:
+
+```powershell
+cd D:\CODE\Backup\Backupfile_TKDA
+.\.venv\Scripts\python.exe -m scan_backup_manager
+```
+
+## Lệnh chạy nhanh cho các lần sau
+
+Mỗi lần mở máy hoặc mở PowerShell mới, chỉ cần:
+
+```powershell
+cd D:\CODE\Backup\Backupfile_TKDA
+.\.venv\Scripts\python.exe -m scan_backup_manager
+```
+
+Hoặc:
+
+```powershell
+cd D:\CODE\Backup\Backupfile_TKDA
+.\.venv\Scripts\Activate.ps1
+python -m scan_backup_manager
+```
+
+## Tài khoản đăng nhập ban đầu
+
+Khi mở ứng dụng lần đầu, chọn đăng nhập Admin.
+
+Mật khẩu Admin mặc định:
 
 ```text
 Admin@123
 ```
 
-The app requires this password to be changed on the first Admin login.
+Ứng dụng sẽ yêu cầu đổi mật khẩu Admin trong lần đăng nhập đầu tiên.
 
-## Navigation
+## Dữ liệu runtime
 
-The top-level menu has exactly four sections:
+Khi chạy, ứng dụng tự tạo dữ liệu tại thư mục `data/`, ví dụ:
 
-- **Tổng Quan** -- aggregated KPIs and health across every project.
-- **Danh sách dự án** -- the project list; click a project to open its own
-  console. Includes creating new projects.
-- **Cấu hình / Cài đặt** -- system-wide settings: admin password, theme,
-  language, default values for new projects, and manual database backup.
-- **Nhật ký hệ thống** -- a filterable view over the `audit_logs` table
-  (by project, action, workstation, date range).
+```text
+data/scan_backup_manager.sqlite3
+data/mock_env/
+```
 
-Opening a project from the list leads to its own console with 6 tabs:
+Các thư mục báo cáo, staging và conflict archive sẽ được tạo theo cấu hình từng
+dự án.
 
-- **Bảng điều khiển** -- KPIs, workstation health, recent activity, open
-  conflicts, and the manual "Chạy backup ngay" / "Kiểm tra hash" actions.
-- **Danh mục hồ sơ** -- the imported Excel list and the **Đã quét xong**
-  progress marker. The Windows service remains responsible for automatic
-  backup; personnel cannot trigger file operations.
-- **Mapfile hệ thống** -- the searchable, paginated index of files discovered
-  and imported records, grouped by case. It tracks scanner/checker, scan/check
-  dates, paper-size status and page-count differences, backup status, and opens
-  the case folder directly without exposing a long path column.
-- **Công việc** -- tasks assigned to project personnel.
-- **Thống kê** -- productivity by day/personnel, completion ratio, and
-  Done-to-backup latency, with an Excel export.
-- **Cấu hình** -- project info and directory tree, mapfile column mapping,
-  workstations, personnel, and per-project polling settings.
+## Tạo dữ liệu demo
 
-## Project Setup
+Nếu muốn thử nhanh giao diện và luồng backup với dữ liệu mẫu:
 
-In a project's **Cấu hình** tab, configure:
+```powershell
+cd D:\CODE\Backup\Backupfile_TKDA
+.\.venv\Scripts\python.exe scripts\seed_mock_data.py
+.\.venv\Scripts\python.exe -m scan_backup_manager
+```
 
-- Project code and display name
-- Backup, staging, conflict archive, and reports directories
-- Paper-size catalog (A4/A3 by default, with support for additional formats)
-- A required ordered directory tree
+Script demo sẽ tạo:
 
-Each directory level supports one validation type:
+- Hai dự án mẫu: `PROJECT_ALPHA` và `PROJECT_BETA`.
+- Thư mục share giả lập cho máy trạm scan.
+- File PDF hợp lệ và một số file sai cấu trúc.
+- Một trường hợp xung đột backup.
+- Mapfile Excel mẫu.
+- Báo cáo Excel mẫu.
 
-- `YEAR4`: a four-digit year
-- `ENUM`: one of the configured values
-- `INTEGER`: digits only
-- `TEXT`: any non-empty directory name
+Nếu đã có database cũ, script sẽ đổi tên database cũ thành file `.bak-*` trước
+khi tạo dữ liệu demo mới.
 
-The project folder on each workstation must match the configured project code
-exactly. For project code `PROJECT_ALPHA` and levels Year, Category, Record ID:
+## Cấu hình dự án
+
+Trong tab cấu hình của từng dự án, cần khai báo:
+
+- Mã dự án và tên hiển thị.
+- Thư mục backup.
+- Thư mục staging.
+- Thư mục lưu file xung đột.
+- Thư mục xuất báo cáo.
+- Danh mục khổ giấy, ví dụ A4/A3.
+- Cây thư mục bắt buộc.
+- Danh sách máy trạm/share cần quét.
+- Nhân sự và mã PIN đăng nhập của nhân sự.
+- Lịch quét tự động theo dự án.
+
+Ví dụ cây thư mục file scan hợp lệ:
 
 ```text
 PROJECT_ALPHA/2024/DOC/A-001/scan.pdf
 ```
 
-## Windows Service
+Tên thư mục dự án trên máy trạm phải khớp chính xác với mã dự án đã cấu hình.
 
-The production pipeline runs independently from the UI:
+## Chạy Windows Service
+
+Pipeline backup production có thể chạy độc lập với giao diện bằng Windows Service.
+
+Sau khi cài project, mở PowerShell bằng quyền Administrator và chạy:
 
 ```powershell
+cd D:\CODE\Backup\Backupfile_TKDA
+.\.venv\Scripts\Activate.ps1
 scan-backup-service install --startup delayed
 scan-backup-service start
 ```
 
-Configure the service to use a dedicated Windows/domain account that can read
-workstation shares and write the backup destination. For development:
+Để chạy service ở chế độ console khi phát triển hoặc kiểm tra lỗi:
 
 ```powershell
+cd D:\CODE\Backup\Backupfile_TKDA
+.\.venv\Scripts\Activate.ps1
 scan-backup-service-console
 ```
 
-Runtime data and logs default to
-`%PROGRAMDATA%\ScanBackupManager`. Set `SCAN_BACKUP_DATA_DIR` to override this
-location. On first production startup, an existing local `data/` database is
-copied; the original is retained.
+Khi triển khai thật, nên cấu hình service chạy bằng tài khoản Windows/domain có
+quyền đọc thư mục share của máy trạm và quyền ghi vào thư mục backup trên máy chủ.
 
-## Database Upgrade
+## Build file EXE
 
-Schema v4 adds durable backup jobs, operation leases, service heartbeat, and
-personnel PIN credentials. Databases created by earlier releases
-`projects` row) are migrated **in place** the first time they're opened by
-this version: the `projects`/`mapfile_profiles` tables are rebuilt without the
-old single-project constraint, per-project polling settings are seeded from
-the previous global values, and a `.bak-<version>-<timestamp>` copy is made
-before any change -- no data is deleted. Only truly unreadable/pre-versioned
-databases still fall back to the old backup-and-reset behavior.
-
-## Interface Language & Theme
-
-**Cấu hình / Cài đặt** includes a language selector (Tiếng Việt / English) and
-a light/dark theme toggle. Both are saved in SQLite under the `language` and
-`theme_mode` settings.
-
-## Mock Demo Data
-
-Create a full local demo environment for testing the workflow and UI:
+Cài đủ dependency build rồi chạy:
 
 ```powershell
-python scripts/seed_mock_data.py
-python -m scan_backup_manager
+cd D:\CODE\Backup\Backupfile_TKDA
+.\packaging\build.ps1
 ```
 
-The script builds `data/mock_env` with two demo projects (`PROJECT_ALPHA`,
-`PROJECT_BETA`), including:
+Kết quả build nằm trong thư mục `dist/`.
 
-- demo workstation shares,
-- valid PDF files,
-- invalid folder structures,
-- one backup conflict,
-- an Excel mapfile with matched, missing, and one Done-but-not-yet-backed-up row,
-- a generated daily report.
-
-It seeds the default SQLite database used by the app. If an existing database is
-present, the script renames it to a timestamped `.bak-*` file before creating
-the demo database.
-
-## Build
+Nếu có Inno Setup, có thể tạo bộ cài:
 
 ```powershell
-.\packaging\build.ps1
 iscc .\packaging\installer.iss
 ```
 
-This creates separate UI and Windows Service executables. Inno Setup bundles
-them and prompts for the dedicated service account. For a Flutter-native build instead, use
-`flet build windows` -- this requires Visual Studio (Desktop development with
-C++ workload) and the Flutter SDK on the build machine.
+## Lệnh kiểm tra dành cho lập trình viên
+
+Chạy test:
+
+```powershell
+cd D:\CODE\Backup\Backupfile_TKDA
+.\.venv\Scripts\python.exe -m pytest
+```
+
+Kiểm tra package có chạy được không:
+
+```powershell
+.\.venv\Scripts\python.exe -m scan_backup_manager
+```
+
+## Lỗi thường gặp
+
+### PowerShell báo không thấy `python`
+
+Cài Python:
+
+```powershell
+winget install --id Python.Python.3.12 -e
+```
+
+Đóng PowerShell, mở lại và kiểm tra:
+
+```powershell
+python --version
+```
+
+Nếu vẫn lỗi, tắt alias `python.exe` và `python3.exe` trong App execution aliases
+của Windows.
+
+### Không chạy được `Activate.ps1`
+
+Chạy:
+
+```powershell
+Set-ExecutionPolicy -Scope CurrentUser RemoteSigned
+```
+
+Sau đó chạy lại:
+
+```powershell
+.\.venv\Scripts\Activate.ps1
+```
+
+### Không thấy lệnh `scan-backup-manager`
+
+Dùng lệnh trực tiếp:
+
+```powershell
+.\.venv\Scripts\python.exe -m scan_backup_manager
+```
+
+Hoặc cài lại package:
+
+```powershell
+.\.venv\Scripts\python.exe -m pip install -e ".[dev,build]"
+```
+
+### Không clone/push được GitHub
+
+Kiểm tra Git và GitHub CLI:
+
+```powershell
+git --version
+gh --version
+gh auth status
+```
+
+Nếu chưa đăng nhập GitHub CLI:
+
+```powershell
+gh auth login
+```
+
+## Ghi chú triển khai
+
+- Không commit thư mục `.venv/`, `data/`, `logs/`, `dist/`.
+- Database mặc định nằm trong `data/scan_backup_manager.sqlite3` khi chạy local.
+- Có thể đặt biến môi trường `SCAN_BACKUP_DATA_DIR` để đổi thư mục lưu dữ liệu
+  runtime.
+- Khi chạy production bằng service, nên dùng tài khoản service riêng thay vì tài
+  khoản cá nhân.
