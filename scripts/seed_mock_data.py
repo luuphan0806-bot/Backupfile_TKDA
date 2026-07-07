@@ -136,6 +136,11 @@ def create_mock_files() -> dict[str, Path]:
         "Second valid legacy file from another operator folder.",
     )
     write_pdf(
+        shares / "SCAN_OLD_SHARE" / "LEVANC" / "26052026" / "SCAN" / "CSDL_SOHOA_A" / "2024" / "HS" / "126" / "4.pdf",
+        "CSDL_SOHOA_A HS 126",
+        "Additional legacy file for mapfile display review.",
+    )
+    write_pdf(
         shares / "SCAN_OLD_SHARE" / "NGUYENVANA" / "24052026" / "SCAN" / "CSDL_SOHOA_A" / "2023" / "SAI_LOAI" / "125" / "3.pdf",
         "CSDL_SOHOA_A invalid category",
         "Legacy structure with an invalid category for display review.",
@@ -148,6 +153,8 @@ def create_mock_files() -> dict[str, Path]:
     sheet.append(["project", "year", "case_type", "case_number", "file_name", "owner", "note"])
     sheet.append(["CSDL_SOHOA_A", "2023", "HS", "123", "1.pdf", "Nguyễn Văn A", "Cấu trúc cũ hợp lệ"])
     sheet.append(["CSDL_SOHOA_A", "2023", "HS", "124", "2.pdf", "Trần Văn B", "Cấu trúc cũ hợp lệ"])
+    sheet.append(["CSDL_SOHOA_A", "2024", "HS", "126", "4.pdf", "Lê Văn C", "Dòng bổ sung có file thật"])
+    sheet.append(["CSDL_SOHOA_A", "2024", "HS", "998", "missing-998.pdf", "Tổ rà soát", "Dòng bổ sung thiếu file"])
     sheet.append(["CSDL_SOHOA_A", "2023", "HS", "999", "missing.pdf", "Tổ rà soát", "Có trong mapfile nhưng chưa có file"])
     workbook.save(old_mapfile_path)
 
