@@ -487,7 +487,7 @@ def build(ctx) -> ft.Control:
 
         return ft.Container(
             padding=12,
-            border=ft.border.all(1, ft.Colors.OUTLINE_VARIANT),
+            border=ft.Border.all(1, ft.Colors.OUTLINE_VARIANT),
             border_radius=8,
             content=ft.Row(
                 wrap=True,
