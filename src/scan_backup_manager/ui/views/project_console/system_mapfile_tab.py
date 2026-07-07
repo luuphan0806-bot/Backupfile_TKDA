@@ -10,6 +10,9 @@ from ...theme import DANGER, INFO, SUCCESS, WARNING
 
 
 PAGE_SIZE = 50
+PAPER_CELL_WIDTH = 178
+PAPER_TABLE_ROW_HEIGHT = 156
+PAPER_FIELD_HEIGHT = 38
 
 PAPER_STATUS_LABELS = {
     "UNKNOWN": "Chưa xác định",
@@ -550,9 +553,11 @@ def build(ctx) -> ft.Control:
         }
         scanner = ft.Dropdown(
             dense=True,
-            width=150,
+            width=158,
+            height=PAPER_FIELD_HEIGHT,
             value=saved["scanner_id"],
             label="Người Scan",
+            content_padding=ft.Padding.symmetric(vertical=4, horizontal=8),
             options=[
                 ft.dropdown.Option(key="", text="--"),
                 *[
@@ -565,18 +570,20 @@ def build(ctx) -> ft.Control:
         scan_date = ft.TextField(
             value=saved["scan_date"],
             dense=True,
-            width=150,
+            width=158,
+            height=PAPER_FIELD_HEIGHT,
             label="Ngày Scan",
             hint_text="YYYY-MM-DD",
-            content_padding=ft.Padding.symmetric(vertical=6, horizontal=8),
+            content_padding=ft.Padding.symmetric(vertical=4, horizontal=8),
         )
         pages = ft.TextField(
             value=saved["scan_pages"],
             dense=True,
+            height=PAPER_FIELD_HEIGHT,
             width=92,
             label="Số Trang",
             keyboard_type=ft.KeyboardType.NUMBER,
-            content_padding=ft.Padding.symmetric(vertical=6, horizontal=8),
+            content_padding=ft.Padding.symmetric(vertical=4, horizontal=8),
         )
 
         def commit(_event=None) -> None:
@@ -613,10 +620,12 @@ def build(ctx) -> ft.Control:
 
         return ft.DataCell(
             ft.Container(
-                width=170,
-                padding=ft.Padding.symmetric(vertical=4, horizontal=0),
+                width=PAPER_CELL_WIDTH,
+                height=PAPER_TABLE_ROW_HEIGHT - 14,
+                padding=ft.Padding.symmetric(vertical=6, horizontal=0),
                 content=ft.Column(
-                    spacing=4,
+                    spacing=6,
+                    tight=True,
                     controls=[
                         scanner,
                         ft.Row(
@@ -643,9 +652,11 @@ def build(ctx) -> ft.Control:
         }
         checker = ft.Dropdown(
             dense=True,
-            width=150,
+            width=158,
+            height=PAPER_FIELD_HEIGHT,
             value=saved["checker_id"],
             label="Người Check",
+            content_padding=ft.Padding.symmetric(vertical=4, horizontal=8),
             options=[
                 ft.dropdown.Option(key="", text="--"),
                 *[
@@ -658,10 +669,11 @@ def build(ctx) -> ft.Control:
         pages = ft.TextField(
             value=saved["check_pages"],
             dense=True,
+            height=PAPER_FIELD_HEIGHT,
             width=92,
             label="Số Trang",
             keyboard_type=ft.KeyboardType.NUMBER,
-            content_padding=ft.Padding.symmetric(vertical=6, horizontal=8),
+            content_padding=ft.Padding.symmetric(vertical=4, horizontal=8),
         )
 
         def commit(_event=None) -> None:
@@ -689,10 +701,12 @@ def build(ctx) -> ft.Control:
 
         return ft.DataCell(
             ft.Container(
-                width=170,
-                padding=ft.Padding.symmetric(vertical=4, horizontal=0),
+                width=PAPER_CELL_WIDTH,
+                height=PAPER_TABLE_ROW_HEIGHT - 14,
+                padding=ft.Padding.symmetric(vertical=6, horizontal=0),
                 content=ft.Column(
-                    spacing=4,
+                    spacing=6,
+                    tight=True,
                     controls=[
                         checker,
                         ft.Row(
@@ -799,7 +813,15 @@ def build(ctx) -> ft.Control:
             )
         )
 
-    table = ft.DataTable(columns=columns, rows=data_rows)
+    table = ft.DataTable(
+        columns=columns,
+        rows=data_rows,
+        data_row_min_height=PAPER_TABLE_ROW_HEIGHT,
+        data_row_max_height=PAPER_TABLE_ROW_HEIGHT,
+        heading_row_height=48,
+        column_spacing=12,
+        horizontal_margin=8,
+    )
     toolbar = ft.Row(
         spacing=8,
         wrap=True,
