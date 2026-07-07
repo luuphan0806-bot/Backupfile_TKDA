@@ -45,6 +45,18 @@ def test_client_excel_import_and_export(tmp_path: Path) -> None:
     assert exported_book.active.max_row == 2
 
 
+def test_client_template_uses_import_headers(tmp_path: Path) -> None:
+    db = Database(tmp_path / "app.sqlite3")
+    service = ConfigExcelService(db)
+
+    template = service.export_client_template(tmp_path)
+    sheet = load_workbook(template, read_only=True).active
+
+    assert [cell.value for cell in next(sheet.iter_rows(min_row=1, max_row=1))] == [
+        "client_code", "share_path", "enabled", "notes"
+    ]
+
+
 def test_personnel_excel_import_and_export_sets_pin(tmp_path: Path) -> None:
     db = Database(tmp_path / "app.sqlite3")
     project_id = _project(db, tmp_path)
@@ -65,3 +77,15 @@ def test_personnel_excel_import_and_export_sets_pin(tmp_path: Path) -> None:
     assert db.verify_personnel_pin("PROJECT_ALPHA", "NV01", "123456")
     exported_book = load_workbook(exported, read_only=True)
     assert exported_book.active.max_row == 2
+
+
+def test_personnel_template_uses_import_headers(tmp_path: Path) -> None:
+    db = Database(tmp_path / "app.sqlite3")
+    service = ConfigExcelService(db)
+
+    template = service.export_personnel_template(tmp_path)
+    sheet = load_workbook(template, read_only=True).active
+
+    assert [cell.value for cell in next(sheet.iter_rows(min_row=1, max_row=1))] == [
+        "personnel_code", "full_name", "role_name", "enabled", "pin"
+    ]

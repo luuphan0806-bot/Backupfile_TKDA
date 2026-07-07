@@ -56,6 +56,30 @@ class ConfigExcelService:
     def __init__(self, db: Database):
         self.db = db
 
+    def export_client_template(self, output_dir: Path) -> Path:
+        output_dir.mkdir(parents=True, exist_ok=True)
+        path = output_dir / "mau_nhap_may_tram.xlsx"
+        workbook = Workbook()
+        sheet = workbook.active
+        sheet.title = "May tram"
+        sheet.append(CLIENT_HEADERS)
+        sheet.append(["SCAN01", r"\\SCAN01\share", 1, "Ghi chú tùy chọn"])
+        sheet.append(["", "", "", ""])
+        workbook.save(path)
+        return path
+
+    def export_personnel_template(self, output_dir: Path) -> Path:
+        output_dir.mkdir(parents=True, exist_ok=True)
+        path = output_dir / "mau_nhap_nhan_su.xlsx"
+        workbook = Workbook()
+        sheet = workbook.active
+        sheet.title = "Nhan su"
+        sheet.append(PERSONNEL_HEADERS)
+        sheet.append(["NV001", "Nguyễn Văn A", "Nhân sự scan", 1, "123456"])
+        sheet.append(["", "", "", "", ""])
+        workbook.save(path)
+        return path
+
     def export_clients(self, project_id: int, output_dir: Path) -> Path:
         output_dir.mkdir(parents=True, exist_ok=True)
         path = output_dir / "may_tram.xlsx"

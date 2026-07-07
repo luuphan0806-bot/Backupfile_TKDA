@@ -305,6 +305,14 @@ def _build_clients_section(ctx) -> ft.Control:
         error_text.color = ft.Colors.PRIMARY
         ctx.page.update()
 
+    def export_template(_event) -> None:
+        project = db.get_project(ctx.project_id)
+        output_dir = Path(project.reports_dir if project else "data/reports")
+        path = excel.export_client_template(output_dir)
+        error_text.value = f"Đã tạo file mẫu: {path}"
+        error_text.color = ft.Colors.PRIMARY
+        ctx.page.update()
+
     clients = db.list_clients(ctx.project_id)
     table = ft.DataTable(
         columns=[ft.DataColumn(ft.Text("Mã")), ft.DataColumn(ft.Text("Share")), ft.DataColumn(ft.Text("Ghi chú")), ft.DataColumn(ft.Text("Kích hoạt")), ft.DataColumn(ft.Text(""))],
@@ -333,6 +341,7 @@ def _build_clients_section(ctx) -> ft.Control:
                     wrap=True,
                     controls=[
                         ft.FilledButton("Thêm / cập nhật máy trạm", on_click=save_client),
+                        ft.OutlinedButton("Tải file mẫu", icon=ft.Icons.DESCRIPTION_OUTLINED, on_click=export_template),
                         ft.OutlinedButton("Nhập Excel", icon=ft.Icons.UPLOAD_FILE, on_click=import_excel),
                         ft.OutlinedButton("Xuất Excel", icon=ft.Icons.DOWNLOAD, on_click=export_excel),
                     ],
@@ -406,6 +415,14 @@ def _build_personnel_section(ctx) -> ft.Control:
         error_text.color = ft.Colors.PRIMARY
         ctx.page.update()
 
+    def export_template(_event) -> None:
+        project = db.get_project(ctx.project_id)
+        output_dir = Path(project.reports_dir if project else "data/reports")
+        path = excel.export_personnel_template(output_dir)
+        error_text.value = f"Đã tạo file mẫu: {path}"
+        error_text.color = ft.Colors.PRIMARY
+        ctx.page.update()
+
     personnel = db.list_personnel(ctx.project_id)
     table = ft.DataTable(
         columns=[ft.DataColumn(ft.Text("Mã")), ft.DataColumn(ft.Text("Họ tên")), ft.DataColumn(ft.Text("Vai trò")), ft.DataColumn(ft.Text("Kích hoạt")), ft.DataColumn(ft.Text(""))],
@@ -434,6 +451,7 @@ def _build_personnel_section(ctx) -> ft.Control:
                     wrap=True,
                     controls=[
                         ft.FilledButton("Thêm / cập nhật nhân sự", on_click=save_personnel),
+                        ft.OutlinedButton("Tải file mẫu", icon=ft.Icons.DESCRIPTION_OUTLINED, on_click=export_template),
                         ft.OutlinedButton("Nhập Excel", icon=ft.Icons.UPLOAD_FILE, on_click=import_excel),
                         ft.OutlinedButton("Xuất Excel", icon=ft.Icons.DOWNLOAD, on_click=export_excel),
                     ],
