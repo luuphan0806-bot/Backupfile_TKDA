@@ -101,6 +101,8 @@ def build(ctx) -> ft.Control:
             "paper_statuses": [
                 {
                     "paper_format_id": paper["paper_format_id"],
+                    "scanner_id": paper.get("scanner_id"),
+                    "scan_date": paper.get("scan_date", ""),
                     "scan_status": paper["scan_status"],
                     "scan_pages": str(paper["scan_pages"]),
                     "check_pages": str(paper["check_pages"]),
@@ -328,6 +330,7 @@ def build(ctx) -> ft.Control:
     paper_formats = ctx.db.list_paper_formats(ctx.project_id, enabled_only=True)
     directory_levels = ctx.db.list_directory_levels(ctx.project_id)
     personnel = ctx.db.list_personnel(ctx.project_id, enabled_only=True)
+    clients = ctx.db.list_clients(ctx.project_id)
     add_fields: list[ft.TextField] = []
 
     def selected_record_keys() -> list[str]:
@@ -346,6 +349,8 @@ def build(ctx) -> ft.Control:
             "paper_statuses": [
                 {
                     "paper_format_id": paper["paper_format_id"],
+                    "scanner_id": paper.get("scanner_id"),
+                    "scan_date": paper.get("scan_date", ""),
                     "scan_status": paper["scan_status"],
                     "scan_pages": str(paper["scan_pages"]),
                     "check_pages": str(paper["check_pages"]),
@@ -448,7 +453,27 @@ def build(ctx) -> ft.Control:
 
     def build_add_panel() -> ft.Control:
         add_fields.clear()
-        controls: list[ft.Control] = []
+        client_dropdown = ft.Dropdown(
+            label="Máy nhận hồ sơ cứng",
+            dense=True,
+            width=240,
+            value=state["new_record"].get("client_code", ""),
+            options=[
+                ft.dropdown.Option(key="", text="-- Chưa chọn --"),
+                *[
+                    ft.dropdown.Option(
+                        key=client.client_code,
+                        text=f"{client.client_code} - {client.share_path}",
+                    )
+                    for client in clients
+                    if client.enabled
+                ],
+            ],
+        )
+        client_dropdown.on_change = lambda event: state["new_record"].__setitem__(
+            "client_code", event.control.value or ""
+        )
+        controls: list[ft.Control] = [client_dropdown]
         for key, label in new_record_keys():
             field = ft.TextField(
                 label=label,
@@ -473,7 +498,11 @@ def build(ctx) -> ft.Control:
                 raw_key = (state["new_record"].get("record_key", "") or "").strip()
                 parts = [part for part in raw_key.replace("\\", "/").split("/") if part]
             try:
-                ctx.mapfiles.add_manual_record(ctx.project_id, parts)
+                ctx.mapfiles.add_manual_record(
+                    ctx.project_id,
+                    parts,
+                    client_code=(state["new_record"].get("client_code") or "").strip() or None,
+                )
             except ValueError as exc:
                 status_banner.value = str(exc)
                 status_banner.color = ft.Colors.ERROR
@@ -508,6 +537,128 @@ def build(ctx) -> ft.Control:
             ),
         )
 
+    def paper_scan_cell(record: dict, paper_format) -> ft.DataCell:
+        current = dict(record["paper_statuses"].get(paper_format.code) or {})
+        saved = {
+            "scanner_id": str(current.get("scanner_id") or ""),
+            "scan_date": current.get("scan_date", "") or "",
+            "scan_pages": str(current.get("scan_pages", 0) or 0),
+        }
+        scanner = ft.Dropdown(
+            dense=True,
+            width=180,
+            value=saved["scanner_id"],
+            options=[
+                ft.dropdown.Option(key="", text="--"),
+                *[
+                    ft.dropdown.Option(key=str(person.id), text=f"{person.personnel_code} - {person.full_name}")
+                    for person in personnel
+                    if person.id is not None
+                ],
+            ],
+        )
+        scan_date = ft.TextField(
+            value=saved["scan_date"],
+            dense=True,
+            width=112,
+            hint_text="YYYY-MM-DD",
+            content_padding=ft.Padding.symmetric(vertical=6, horizontal=8),
+        )
+        pages = ft.TextField(
+            value=saved["scan_pages"],
+            dense=True,
+            width=76,
+            label="Trang",
+            keyboard_type=ft.KeyboardType.NUMBER,
+            content_padding=ft.Padding.symmetric(vertical=6, horizontal=8),
+        )
+
+        def commit(_event=None) -> None:
+            next_values = {
+                "scanner_id": scanner.value or "",
+                "scan_date": scan_date.value or "",
+                "scan_pages": pages.value or "0",
+            }
+            if next_values == saved:
+                return
+
+            def mutate(values: dict) -> None:
+                for item in values["paper_statuses"]:
+                    if int(item["paper_format_id"]) == int(paper_format.id):
+                        item["scanner_id"] = next_values["scanner_id"] or None
+                        item["scan_date"] = next_values["scan_date"]
+                        item["scan_pages"] = next_values["scan_pages"]
+                        item["scan_status"] = (
+                            "SCANNED" if int(next_values["scan_pages"] or "0") > 0 else "UNKNOWN"
+                        )
+                        return
+
+            ok = save_inline(
+                record,
+                mutate,
+                message=f"Đã lưu Scan {paper_format.code} cho {record['record_key']}.",
+            )
+            if ok:
+                saved.update(next_values)
+            else:
+                scanner.value = saved["scanner_id"]
+                scan_date.value = saved["scan_date"]
+                pages.value = saved["scan_pages"]
+
+        return ft.DataCell(
+            ft.Row(
+                spacing=6,
+                controls=[
+                    scanner,
+                    scan_date,
+                    pages,
+                    ft.IconButton(icon=ft.Icons.SAVE, tooltip=f"Lưu Scan {paper_format.code}", on_click=commit),
+                ],
+            )
+        )
+
+    def paper_check_pages_cell(record: dict, paper_format) -> ft.DataCell:
+        current = dict(record["paper_statuses"].get(paper_format.code) or {})
+        saved = {"check_pages": str(current.get("check_pages", 0) or 0)}
+        pages = ft.TextField(
+            value=saved["check_pages"],
+            dense=True,
+            width=76,
+            keyboard_type=ft.KeyboardType.NUMBER,
+            content_padding=ft.Padding.symmetric(vertical=6, horizontal=8),
+        )
+
+        def commit(_event=None) -> None:
+            next_value = pages.value or "0"
+            if next_value == saved["check_pages"]:
+                return
+
+            def mutate(values: dict) -> None:
+                for item in values["paper_statuses"]:
+                    if int(item["paper_format_id"]) == int(paper_format.id):
+                        item["check_pages"] = next_value
+                        return
+
+            ok = save_inline(
+                record,
+                mutate,
+                message=f"Đã lưu Check {paper_format.code} cho {record['record_key']}.",
+            )
+            if ok:
+                saved["check_pages"] = next_value
+            else:
+                pages.value = saved["check_pages"]
+
+        return ft.DataCell(
+            ft.Row(
+                spacing=4,
+                controls=[
+                    pages,
+                    ft.IconButton(icon=ft.Icons.SAVE, tooltip=f"Lưu Check {paper_format.code}", on_click=commit),
+                ],
+            )
+        )
+
     columns = [ft.DataColumn(ft.Text("STT"), numeric=True)]
     if directory_levels:
         columns.extend(
@@ -517,14 +668,15 @@ def build(ctx) -> ft.Control:
         columns.append(ft.DataColumn(ft.Text("Mã hồ sơ")))
     columns.extend(
         [
-            ft.DataColumn(ft.Text("Người Scan")),
-            ft.DataColumn(ft.Text("Ngày Scan")),
             *[
-                ft.DataColumn(ft.Text(paper_format.code))
+                ft.DataColumn(ft.Text(f"{paper_format.code}: Người Scan / Ngày Scan / Số Trang"))
                 for paper_format in paper_formats
             ],
             ft.DataColumn(ft.Text("Người Check")),
-            ft.DataColumn(ft.Text("Ngày Check")),
+            *[
+                ft.DataColumn(ft.Text(f"Check {paper_format.code}"))
+                for paper_format in paper_formats
+            ],
             ft.DataColumn(ft.Text("Trạng thái hồ sơ")),
             ft.DataColumn(ft.Text("Tình trạng backup")),
             ft.DataColumn(ft.Text("Máy đang lưu")),
@@ -556,14 +708,15 @@ def build(ctx) -> ft.Control:
             )
         cells.extend(
             [
-                personnel_cell(record, "scanner_id", record["scanner_id"]),
-                date_cell(record, "scan_date", record["scan_date"] or ""),
                 *[
-                    paper_inline_cell(record, paper_format)
+                    paper_scan_cell(record, paper_format)
                     for paper_format in paper_formats
                 ],
                 personnel_cell(record, "checker_id", record["checker_id"]),
-                date_cell(record, "check_date", record["check_date"] or ""),
+                *[
+                    paper_check_pages_cell(record, paper_format)
+                    for paper_format in paper_formats
+                ],
                 record_status_cell(record),
                 ft.DataCell(
                     _badge(

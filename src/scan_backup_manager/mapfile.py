@@ -7,6 +7,7 @@ from typing import Any
 from openpyxl import load_workbook
 
 from .db import Database
+from .filesystem import find_project_roots
 from .models import MapfileProfile
 
 
@@ -199,6 +200,7 @@ class MapfileService:
         record_parts: list[str],
         *,
         file_name: str = "1.pdf",
+        client_code: str | None = None,
     ) -> int:
         project = self.db.get_project(project_id)
         if not project:
@@ -234,6 +236,8 @@ class MapfileService:
                 "manual://system-mapfile",
             )
         row_id = self.db.append_mapfile_row(import_id, raw, expected)
+        if client_code:
+            self.create_client_record_folder(project_id, client_code, clean_parts)
         self.reconcile_row(project_id, row_id)
         self.db.record_audit(
             "MAPFILE_ROW_ADDED",
@@ -241,6 +245,28 @@ class MapfileService:
             project_id=project_id,
         )
         return row_id
+
+    def create_client_record_folder(
+        self, project_id: int, client_code: str, record_parts: list[str]
+    ) -> Path:
+        project = self.db.get_project(project_id)
+        if not project:
+            raise ValueError(f"Project not found: {project_id}")
+        client = next(
+            (
+                item
+                for item in self.db.list_clients(project_id)
+                if item.client_code == client_code and item.enabled
+            ),
+            None,
+        )
+        if not client:
+            raise ValueError("Máy nhận hồ sơ cứng không hợp lệ hoặc đang tắt.")
+        roots = find_project_roots(Path(client.share_path), project.project_code)
+        project_root = roots[0] if roots else Path(client.share_path) / project.project_code
+        target = project_root / Path(*record_parts)
+        target.mkdir(parents=True, exist_ok=True)
+        return target
 
     def duplicate_manual_record(self, project_id: int, source_record_key: str) -> str:
         source_parts = [
@@ -270,6 +296,8 @@ class MapfileService:
                 paper_statuses=[
                     {
                         "paper_format_id": paper["paper_format_id"],
+                        "scanner_id": paper.get("scanner_id"),
+                        "scan_date": paper.get("scan_date", ""),
                         "scan_status": paper["scan_status"],
                         "scan_pages": str(paper["scan_pages"]),
                         "check_pages": str(paper["check_pages"]),

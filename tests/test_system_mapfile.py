@@ -4,7 +4,7 @@ from scan_backup_manager.db import Database
 import pytest
 
 from scan_backup_manager.mapfile import MapfileService
-from scan_backup_manager.models import Personnel, Project
+from scan_backup_manager.models import Client, Personnel, Project
 
 
 def _create_project(db: Database, tmp_path: Path) -> int:
@@ -102,11 +102,13 @@ def test_record_workflow_tracks_paper_sizes_and_requires_a3_confirmation(
         Personnel(None, project_id, "NV02", "Người Check", "Checker")
     )
     formats = {item.code: item for item in db.list_paper_formats(project_id)}
-    assert set(formats) == {"A4", "A3"}
+    assert set(formats) == {"A4", "A3", "A0"}
 
     paper_statuses = [
         {
             "paper_format_id": formats["A4"].id,
+            "scanner_id": scanner_id,
+            "scan_date": "2026-07-06",
             "scan_status": "SCANNED",
             "scan_pages": 12,
             "check_pages": 12,
@@ -114,26 +116,23 @@ def test_record_workflow_tracks_paper_sizes_and_requires_a3_confirmation(
         },
         {
             "paper_format_id": formats["A3"].id,
+            "scanner_id": None,
+            "scan_date": "",
+            "scan_status": "UNKNOWN",
+            "scan_pages": 0,
+            "check_pages": 0,
+            "notes": "",
+        },
+        {
+            "paper_format_id": formats["A0"].id,
+            "scanner_id": None,
+            "scan_date": "",
             "scan_status": "UNKNOWN",
             "scan_pages": 0,
             "check_pages": 0,
             "notes": "",
         },
     ]
-    with pytest.raises(ValueError, match="xác nhận"):
-        db.save_record_workflow(
-            project_id=project_id,
-            record_key="2026/HS/alpha",
-            scanner_id=scanner_id,
-            scan_date="2026-07-06",
-            checker_id=checker_id,
-            check_date="2026-07-07",
-            record_status="PENDING_CHECK",
-            notes="",
-            paper_statuses=paper_statuses,
-        )
-
-    paper_statuses[1]["scan_status"] = "NOT_PRESENT"
     db.save_record_workflow(
         project_id=project_id,
         record_key="2026/HS/alpha",
@@ -151,7 +150,9 @@ def test_record_workflow_tracks_paper_sizes_and_requires_a3_confirmation(
     assert records[0]["scanner_name"] == "Người Scan"
     assert records[0]["backup_status"] == "BACKED_UP"
     assert records[0]["paper_statuses"]["A4"]["scan_pages"] == 12
-    assert records[0]["paper_statuses"]["A3"]["scan_status"] == "NOT_PRESENT"
+    assert records[0]["paper_statuses"]["A4"]["scanner_id"] == scanner_id
+    assert records[0]["paper_statuses"]["A3"]["scan_status"] == "UNKNOWN"
+    assert records[0]["paper_statuses"]["A0"]["scan_status"] == "UNKNOWN"
 
 
 def test_system_mapfile_includes_imported_record_before_backup(tmp_path: Path) -> None:
@@ -197,6 +198,23 @@ def test_system_mapfile_can_add_manual_record(tmp_path: Path) -> None:
     assert total == 1
     assert records[0]["record_key"] == "2026/HS/002"
     assert records[0]["backup_status"] == "NOT_BACKED_UP"
+
+
+def test_manual_record_can_create_client_folder(tmp_path: Path) -> None:
+    db = Database(tmp_path / "app.sqlite3")
+    project_id = _create_project(db, tmp_path)
+    share = tmp_path / "share"
+    db.save_client(
+        Client(None, project_id, "SCAN01", "", str(share), True)
+    )
+
+    MapfileService(db).add_manual_record(
+        project_id,
+        ["2026", "HS", "010"],
+        client_code="SCAN01",
+    )
+
+    assert (share / "PROJECT_ALPHA" / "2026" / "HS" / "010").is_dir()
 
 
 def test_system_mapfile_can_duplicate_manual_record_with_next_number(tmp_path: Path) -> None:

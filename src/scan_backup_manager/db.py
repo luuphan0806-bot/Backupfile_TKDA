@@ -308,6 +308,8 @@ class Database:
                 id INTEGER PRIMARY KEY,
                 record_id INTEGER NOT NULL,
                 paper_format_id INTEGER NOT NULL,
+                scanner_id INTEGER,
+                scan_date TEXT NOT NULL DEFAULT '',
                 scan_status TEXT NOT NULL DEFAULT 'UNKNOWN',
                 scan_pages INTEGER NOT NULL DEFAULT 0,
                 check_pages INTEGER NOT NULL DEFAULT 0,
@@ -315,6 +317,7 @@ class Database:
                 updated_at TEXT NOT NULL,
                 FOREIGN KEY(record_id) REFERENCES record_workflows(id) ON DELETE CASCADE,
                 FOREIGN KEY(paper_format_id) REFERENCES paper_formats(id) ON DELETE CASCADE,
+                FOREIGN KEY(scanner_id) REFERENCES project_personnel(id) ON DELETE SET NULL,
                 UNIQUE(record_id, paper_format_id)
             );
 
@@ -627,6 +630,13 @@ class Database:
                     row["id"],
                 ),
             )
+        paper_columns = {
+            row[1] for row in conn.execute("PRAGMA table_info(record_paper_statuses)").fetchall()
+        }
+        if "scanner_id" not in paper_columns:
+            conn.execute("ALTER TABLE record_paper_statuses ADD COLUMN scanner_id INTEGER")
+        if "scan_date" not in paper_columns:
+            conn.execute("ALTER TABLE record_paper_statuses ADD COLUMN scan_date TEXT NOT NULL DEFAULT ''")
         self._seed_paper_formats(conn)
 
     @staticmethod
@@ -641,7 +651,11 @@ class Database:
             project_ids = [project_id]
         now = utc_now()
         for current_project_id in project_ids:
-            for code, name, order in (("A4", "Khổ A4", 10), ("A3", "Khổ A3", 20)):
+            for code, name, order in (
+                ("A4", "Khổ A4", 10),
+                ("A3", "Khổ A3", 20),
+                ("A0", "Khổ A0", 30),
+            ):
                 conn.execute(
                     """
                     INSERT OR IGNORE INTO paper_formats(
@@ -1506,9 +1520,11 @@ class Database:
                 placeholders = ", ".join("?" for _ in workflow_ids)
                 status_rows = conn.execute(
                     f"""
-                    SELECT rps.*, pf.code, pf.display_name
+                    SELECT rps.*, pf.code, pf.display_name,
+                        scanner.full_name AS scanner_name
                     FROM record_paper_statuses rps
                     JOIN paper_formats pf ON pf.id=rps.paper_format_id
+                    LEFT JOIN project_personnel scanner ON scanner.id=rps.scanner_id
                     WHERE rps.record_id IN ({placeholders})
                         AND pf.enabled=1
                     ORDER BY pf.sort_order, pf.code
@@ -1562,6 +1578,9 @@ class Database:
             paper_rows = conn.execute(
                 """
                 SELECT pf.id AS paper_format_id, pf.code, pf.display_name,
+                    rps.scanner_id,
+                    scanner.full_name AS scanner_name,
+                    COALESCE(rps.scan_date, '') AS scan_date,
                     COALESCE(rps.scan_status, 'UNKNOWN') AS scan_status,
                     COALESCE(rps.scan_pages, 0) AS scan_pages,
                     COALESCE(rps.check_pages, 0) AS check_pages,
@@ -1569,6 +1588,7 @@ class Database:
                 FROM paper_formats pf
                 LEFT JOIN record_paper_statuses rps
                     ON rps.paper_format_id=pf.id AND rps.record_id=?
+                LEFT JOIN project_personnel scanner ON scanner.id=rps.scanner_id
                 WHERE pf.project_id=? AND pf.enabled=1
                 ORDER BY pf.sort_order, pf.code
                 """,
@@ -1616,9 +1636,15 @@ class Database:
                 raise ValueError("Danh mục khổ giấy không thuộc dự án.")
 
             statuses_by_code: dict[str, str] = {}
-            normalized_papers: list[tuple[int, str, int, int, str]] = []
+            normalized_papers: list[tuple[int, int | None, str, str, int, int, str]] = []
             for item in paper_statuses:
                 format_id = int(item["paper_format_id"])
+                paper_scanner_id = (
+                    int(item["scanner_id"])
+                    if str(item.get("scanner_id") or "").strip()
+                    else None
+                )
+                paper_scan_date = str(item.get("scan_date", "")).strip()
                 scan_status = str(item.get("scan_status", "UNKNOWN"))
                 if scan_status not in PAPER_SCAN_STATUSES:
                     raise ValueError("Trạng thái scan khổ giấy không hợp lệ.")
@@ -1629,6 +1655,15 @@ class Database:
                     raise ValueError("Số trang scan/check phải là số nguyên.") from exc
                 if scan_pages < 0 or check_pages < 0:
                     raise ValueError("Số trang scan/check không được âm.")
+                if paper_scan_date:
+                    try:
+                        datetime.strptime(paper_scan_date, "%Y-%m-%d")
+                    except ValueError as exc:
+                        raise ValueError(
+                            f"Ngày Scan của {valid_formats[format_id]} phải có định dạng YYYY-MM-DD."
+                        ) from exc
+                if scan_pages > 0 and not paper_scan_date:
+                    raise ValueError(f"{valid_formats[format_id]} đã có số trang nhưng chưa nhập Ngày Scan.")
                 if scan_status in {"UNKNOWN", "NOT_PRESENT"} and (
                     scan_pages or check_pages
                 ):
@@ -1647,6 +1682,8 @@ class Database:
                 normalized_papers.append(
                     (
                         format_id,
+                        paper_scanner_id,
+                        paper_scan_date,
                         scan_status,
                         scan_pages,
                         check_pages,
@@ -1654,15 +1691,11 @@ class Database:
                     )
                 )
 
-            if (
-                statuses_by_code.get("A4") in {"SCANNED", "CHECKED"}
-                and statuses_by_code.get("A3") == "UNKNOWN"
+            for personnel_id in (
+                scanner_id,
+                checker_id,
+                *[paper_scanner_id for _format_id, paper_scanner_id, *_rest in normalized_papers],
             ):
-                raise ValueError(
-                    "Đã scan A4: cần xác nhận hồ sơ không có A3 hoặc cập nhật trạng thái A3."
-                )
-
-            for personnel_id in (scanner_id, checker_id):
                 if personnel_id is None:
                     continue
                 exists = conn.execute(
@@ -1710,14 +1743,16 @@ class Database:
                     (project_id, record_key),
                 ).fetchone()["id"]
             )
-            for format_id, status, scan_pages, check_pages, paper_notes in normalized_papers:
+            for format_id, paper_scanner_id, paper_scan_date, status, scan_pages, check_pages, paper_notes in normalized_papers:
                 conn.execute(
                     """
                     INSERT INTO record_paper_statuses(
-                        record_id, paper_format_id, scan_status, scan_pages,
+                        record_id, paper_format_id, scanner_id, scan_date, scan_status, scan_pages,
                         check_pages, notes, updated_at
-                    ) VALUES(?, ?, ?, ?, ?, ?, ?)
+                    ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(record_id, paper_format_id) DO UPDATE SET
+                        scanner_id=excluded.scanner_id,
+                        scan_date=excluded.scan_date,
                         scan_status=excluded.scan_status,
                         scan_pages=excluded.scan_pages,
                         check_pages=excluded.check_pages,
@@ -1727,6 +1762,8 @@ class Database:
                     (
                         workflow_id,
                         format_id,
+                        paper_scanner_id,
+                        paper_scan_date,
                         status,
                         scan_pages,
                         check_pages,
