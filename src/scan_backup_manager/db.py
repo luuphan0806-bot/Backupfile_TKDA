@@ -950,8 +950,6 @@ class Database:
                     key = clean_value.upper() if level.validation_type == "ENUM" else clean_value
                     allowed_by_key.setdefault(key, clean_value)
                 allowed = sorted(allowed_by_key.values())
-                if level.validation_type == "ENUM" and not allowed:
-                    raise ValueError(f"Allowed values are required for {display_name}")
                 conn.execute(
                     """
                     INSERT INTO project_directory_levels(

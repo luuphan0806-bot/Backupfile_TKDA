@@ -78,6 +78,20 @@ def test_directory_level_allowed_values_preserve_display_text(tmp_path: Path) ->
     assert levels[1].allowed_values == ["Hồ sơ"]
 
 
+def test_enum_directory_level_can_start_without_catalog_values(tmp_path: Path) -> None:
+    db = Database(tmp_path / "app.sqlite3")
+    project = configure_project(db, tmp_path)
+
+    db.save_directory_levels(
+        project.id or 0,
+        [DirectoryLevel(None, project.id or 0, 1, "Loại hồ sơ", "ENUM", [])],
+    )
+
+    levels = db.list_directory_levels(project.id or 0)
+    assert levels[0].display_name == "Loại hồ sơ"
+    assert levels[0].allowed_values == []
+
+
 def test_multiple_projects_do_not_leak_data(tmp_path: Path) -> None:
     db = Database(tmp_path / "app.sqlite3")
     project_a = configure_project(db, tmp_path)

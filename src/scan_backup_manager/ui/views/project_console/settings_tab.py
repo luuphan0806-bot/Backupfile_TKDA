@@ -102,10 +102,6 @@ def _build_project_section(ctx) -> ft.Control:
             ctx.page.update()
             return
         values = [v.strip() for v in (level_values_field.value or "").split(",") if v.strip()]
-        if level_type_dropdown.value == "ENUM" and not values:
-            levels_error.value = "Tầng kiểu danh sách cần có ít nhất một giá trị hợp lệ."
-            ctx.page.update()
-            return
         levels.append(DirectoryLevel(None, ctx.project_id, len(levels) + 1, name, level_type_dropdown.value or "TEXT", values))
         level_name_field.value = ""
         level_values_field.value = ""
