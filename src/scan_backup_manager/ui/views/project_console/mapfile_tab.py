@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import asyncio
 import json
 from pathlib import Path
 
 import flet as ft
 
 from ...theme import DANGER, SUCCESS, WARNING, status_label
+from ...workers import run_worker
 
 FILTER_ALL = "all"
 FILTER_NOT_DONE = "not_done"
@@ -32,6 +34,8 @@ def build(ctx) -> ft.Control:
     state = ctx.view_state.setdefault(
         "mapfile", {"filter": FILTER_ALL, "search": "", "page": 0}
     )
+    state.setdefault("flash", "")
+    status_banner.value = state.get("flash", "")
     search_field = ft.TextField(
         label="Tìm kiếm", width=260, dense=True, value=state["search"]
     )
@@ -117,7 +121,50 @@ def build(ctx) -> ft.Control:
             db.mark_mapfile_row_done(row_id, None)
         else:
             db.unmark_mapfile_row_done(row_id)
+        # No ctx.refresh() here on purpose: the checkbox already reflects the
+        # new value instantly on its own, and this is the highest-frequency
+        # click in the console -- rebuilding the whole tab (re-query, toolbar,
+        # filters, table) on every tick would be the heaviest interaction in
+        # the app. The row falls in line with the active filter next time the
+        # user changes filter/page/search, which already calls ctx.refresh().
+
+    def save_cell(
+        row_id: int,
+        row_number: int,
+        column_name: str,
+        saved_value: dict[str, str],
+        control: ft.TextField,
+    ) -> None:
+        new_value = control.value or ""
+        if new_value == saved_value["value"]:
+            return
+        try:
+            ctx.mapfiles.update_row_cell(project_id, row_id, column_name, new_value)
+        except Exception as exc:  # noqa: BLE001 - show validation/storage errors in UI
+            control.value = saved_value["value"]
+            status_banner.value = f"Không thể lưu dòng {row_number}: {exc}"
+            status_banner.color = ft.Colors.ERROR
+            ctx.page.update()
+            return
+        saved_value["value"] = new_value
+        state["flash"] = f"Đã lưu dòng {row_number}, cột {column_name}."
         ctx.refresh()
+
+    def editable_cell(row, column_name: str, value: str) -> ft.DataCell:
+        saved_value = {"value": value}
+        field = ft.TextField(
+            value=value,
+            dense=True,
+            width=max(120, min(260, len(value) * 8 + 40)),
+            content_padding=ft.Padding.symmetric(vertical=6, horizontal=8),
+        )
+        field.on_submit = lambda _e, c=field: save_cell(
+            row["id"], row["row_number"], column_name, saved_value, c
+        )
+        field.on_blur = lambda _e, c=field: save_cell(
+            row["id"], row["row_number"], column_name, saved_value, c
+        )
+        return ft.DataCell(field)
 
     filtered_rows = rows
 
@@ -130,7 +177,9 @@ def build(ctx) -> ft.Control:
     for row in filtered_rows[:200]:
         raw = raw_by_row.get(row["id"], {})
         cells = [ft.DataCell(ft.Text(str(row["row_number"])))]
-        cells.extend(ft.DataCell(ft.Text(raw.get(header, ""))) for header in headers)
+        cells.extend(
+            editable_cell(row, header, raw.get(header, "")) for header in headers
+        )
         cells.append(ft.DataCell(_status_badge(row["status"])))
         cells.append(
             ft.DataCell(
@@ -166,10 +215,25 @@ def build(ctx) -> ft.Control:
         ],
     )
 
+    search_generation = {"value": 0}
+
     def on_search(event) -> None:
-        state["search"] = event.control.value or ""
-        state["page"] = 0
-        ctx.refresh()
+        # Debounced: typing a whole search term used to trigger a full tab
+        # rebuild + paginated DB query per keystroke. Wait for a short pause
+        # in typing instead, and drop any stale/superseded runs.
+        text = event.control.value or ""
+        search_generation["value"] += 1
+        this_generation = search_generation["value"]
+
+        async def apply_after_pause() -> None:
+            await asyncio.sleep(0.35)
+            if search_generation["value"] != this_generation:
+                return
+            state["search"] = text
+            state["page"] = 0
+            ctx.refresh()
+
+        ctx.page.run_task(apply_after_pause)
 
     search_field.on_change = on_search
 

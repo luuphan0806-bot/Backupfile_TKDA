@@ -16,6 +16,7 @@ from .models import (
     Client,
     DirectoryLevel,
     MapfileProfile,
+    PaperFormat,
     Personnel,
     Project,
     ProjectSettings,
@@ -23,7 +24,7 @@ from .models import (
 )
 
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 DEFAULT_ADMIN_PASSWORD = "Admin@123"
 PBKDF2_ITERATIONS = 600_000
 
@@ -32,10 +33,39 @@ DEFAULT_SETTINGS_KEYS = {
     "stability_wait_seconds": "default_stability_wait_seconds",
     "numeric_sequence_check": "default_numeric_sequence_check",
 }
+PAPER_SCAN_STATUSES = {
+    "UNKNOWN",
+    "NOT_PRESENT",
+    "PENDING_SCAN",
+    "SCANNED",
+    "CHECKED",
+    "RESCAN_REQUIRED",
+}
+RECORD_WORKFLOW_STATUSES = {
+    "NOT_STARTED",
+    "SCANNING",
+    "PENDING_PAPER",
+    "PENDING_CHECK",
+    "COMPLETED",
+    "RESCAN_REQUIRED",
+}
 
 
 def utc_now() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+
+
+def record_key_from_relative_path(relative_path: str) -> str:
+    normalized = relative_path.replace("\\", "/").strip("/")
+    if not normalized:
+        return ""
+    return normalized.rsplit("/", 1)[0] if "/" in normalized else normalized
+
+
+def record_key_from_expected_path(expected_path: str) -> str:
+    parent = record_key_from_relative_path(expected_path)
+    parts = parent.split("/")
+    return "/".join(parts[1:]) if len(parts) > 1 else parent
 
 
 def _password_hash(password: str, salt: bytes) -> str:
@@ -109,6 +139,20 @@ class Database:
             self._create_schema(conn)
             if needs_migration and current_version is not None and current_version < 3:
                 self._migrate_v2_to_v3(conn)
+            # Idempotent so partially upgraded databases can repair themselves.
+            self._migrate_to_v5(conn)
+            conn.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_backup_project_record
+                ON backup_files(project_id, record_key, status)
+                """
+            )
+            conn.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_map_rows_record
+                ON mapfile_rows(import_id, record_key)
+                """
+            )
             conn.execute(
                 "INSERT OR REPLACE INTO app_meta(key, value) VALUES('schema_version', ?)",
                 (str(SCHEMA_VERSION),),
@@ -227,6 +271,53 @@ class Database:
                 UNIQUE(project_id, task_code)
             );
 
+            CREATE TABLE IF NOT EXISTS paper_formats(
+                id INTEGER PRIMARY KEY,
+                project_id INTEGER NOT NULL,
+                code TEXT NOT NULL,
+                display_name TEXT NOT NULL,
+                requires_separate_scan INTEGER NOT NULL DEFAULT 1,
+                requires_check INTEGER NOT NULL DEFAULT 1,
+                enabled INTEGER NOT NULL DEFAULT 1,
+                sort_order INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                FOREIGN KEY(project_id) REFERENCES projects(id) ON DELETE CASCADE,
+                UNIQUE(project_id, code)
+            );
+
+            CREATE TABLE IF NOT EXISTS record_workflows(
+                id INTEGER PRIMARY KEY,
+                project_id INTEGER NOT NULL,
+                record_key TEXT NOT NULL,
+                scanner_id INTEGER,
+                scan_date TEXT NOT NULL DEFAULT '',
+                checker_id INTEGER,
+                check_date TEXT NOT NULL DEFAULT '',
+                record_status TEXT NOT NULL DEFAULT 'NOT_STARTED',
+                notes TEXT NOT NULL DEFAULT '',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                FOREIGN KEY(project_id) REFERENCES projects(id) ON DELETE CASCADE,
+                FOREIGN KEY(scanner_id) REFERENCES project_personnel(id) ON DELETE SET NULL,
+                FOREIGN KEY(checker_id) REFERENCES project_personnel(id) ON DELETE SET NULL,
+                UNIQUE(project_id, record_key)
+            );
+
+            CREATE TABLE IF NOT EXISTS record_paper_statuses(
+                id INTEGER PRIMARY KEY,
+                record_id INTEGER NOT NULL,
+                paper_format_id INTEGER NOT NULL,
+                scan_status TEXT NOT NULL DEFAULT 'UNKNOWN',
+                scan_pages INTEGER NOT NULL DEFAULT 0,
+                check_pages INTEGER NOT NULL DEFAULT 0,
+                notes TEXT NOT NULL DEFAULT '',
+                updated_at TEXT NOT NULL,
+                FOREIGN KEY(record_id) REFERENCES record_workflows(id) ON DELETE CASCADE,
+                FOREIGN KEY(paper_format_id) REFERENCES paper_formats(id) ON DELETE CASCADE,
+                UNIQUE(record_id, paper_format_id)
+            );
+
             CREATE TABLE IF NOT EXISTS settings(
                 key TEXT PRIMARY KEY,
                 value TEXT NOT NULL
@@ -239,6 +330,7 @@ class Database:
                 source_path TEXT NOT NULL,
                 project_code TEXT NOT NULL,
                 relative_project_path TEXT NOT NULL,
+                record_key TEXT NOT NULL DEFAULT '',
                 dest_path TEXT NOT NULL,
                 file_size INTEGER,
                 source_mtime TEXT,
@@ -317,6 +409,7 @@ class Database:
                 row_number INTEGER NOT NULL,
                 raw_json TEXT NOT NULL,
                 expected_relative_path TEXT NOT NULL,
+                record_key TEXT NOT NULL DEFAULT '',
                 status TEXT NOT NULL DEFAULT 'EXPECTED',
                 message TEXT NOT NULL DEFAULT '',
                 is_done INTEGER NOT NULL DEFAULT 0,
@@ -380,6 +473,10 @@ class Database:
                 ON mapfile_rows(import_id, status, is_done);
             CREATE INDEX IF NOT EXISTS idx_backup_project_path
                 ON backup_files(project_id, relative_project_path, status);
+            CREATE INDEX IF NOT EXISTS idx_record_workflows_project
+                ON record_workflows(project_id, record_key);
+            CREATE INDEX IF NOT EXISTS idx_paper_formats_project
+                ON paper_formats(project_id, enabled, sort_order);
             """
         )
 
@@ -496,6 +593,65 @@ class Database:
 
         conn.execute("PRAGMA foreign_keys=ON")
 
+    def _migrate_to_v5(self, conn: sqlite3.Connection) -> None:
+        backup_columns = {
+            row[1] for row in conn.execute("PRAGMA table_info(backup_files)").fetchall()
+        }
+        if "record_key" not in backup_columns:
+            conn.execute(
+                "ALTER TABLE backup_files ADD COLUMN record_key TEXT NOT NULL DEFAULT ''"
+            )
+        rows = conn.execute(
+            "SELECT id, relative_project_path FROM backup_files WHERE record_key=''"
+        ).fetchall()
+        for row in rows:
+            conn.execute(
+                "UPDATE backup_files SET record_key=? WHERE id=?",
+                (record_key_from_relative_path(row["relative_project_path"]), row["id"]),
+            )
+        mapfile_columns = {
+            row[1] for row in conn.execute("PRAGMA table_info(mapfile_rows)").fetchall()
+        }
+        if "record_key" not in mapfile_columns:
+            conn.execute(
+                "ALTER TABLE mapfile_rows ADD COLUMN record_key TEXT NOT NULL DEFAULT ''"
+            )
+        mapfile_rows = conn.execute(
+            "SELECT id, expected_relative_path FROM mapfile_rows WHERE record_key=''"
+        ).fetchall()
+        for row in mapfile_rows:
+            conn.execute(
+                "UPDATE mapfile_rows SET record_key=? WHERE id=?",
+                (
+                    record_key_from_expected_path(row["expected_relative_path"]),
+                    row["id"],
+                ),
+            )
+        self._seed_paper_formats(conn)
+
+    @staticmethod
+    def _seed_paper_formats(
+        conn: sqlite3.Connection, project_id: int | None = None
+    ) -> None:
+        if project_id is None:
+            project_ids = [
+                int(row["id"]) for row in conn.execute("SELECT id FROM projects")
+            ]
+        else:
+            project_ids = [project_id]
+        now = utc_now()
+        for current_project_id in project_ids:
+            for code, name, order in (("A4", "Khổ A4", 10), ("A3", "Khổ A3", 20)):
+                conn.execute(
+                    """
+                    INSERT OR IGNORE INTO paper_formats(
+                        project_id, code, display_name, requires_separate_scan,
+                        requires_check, enabled, sort_order, created_at, updated_at
+                    ) VALUES(?, ?, ?, 1, 1, 1, ?, ?, ?)
+                    """,
+                    (current_project_id, code, name, order, now, now),
+                )
+
     def _ensure_defaults(self, conn: sqlite3.Connection) -> None:
         defaults = {
             "default_poll_interval_seconds": str(DEFAULT_POLL_INTERVAL_SECONDS),
@@ -516,6 +672,7 @@ class Database:
                 """,
                 (salt.hex(), _password_hash(DEFAULT_ADMIN_PASSWORD, salt), utc_now()),
             )
+        self._seed_paper_formats(conn)
 
     # ------------------------------------------------------------------
     # Authentication and settings (global, not project-scoped)
@@ -682,6 +839,7 @@ class Database:
                 """,
                 (project_id, now, now),
             )
+            self._seed_paper_formats(conn, project_id)
         return project_id
 
     def get_project_settings(self, project_id: int) -> ProjectSettings:
@@ -888,6 +1046,74 @@ class Database:
                 return
             conn.execute("DELETE FROM project_personnel WHERE id=?", (personnel_id,))
 
+    # ------------------------------------------------------------------
+    # Paper formats
+    # ------------------------------------------------------------------
+    @staticmethod
+    def _row_to_paper_format(row: sqlite3.Row) -> PaperFormat:
+        return PaperFormat(
+            row["id"],
+            row["project_id"],
+            row["code"],
+            row["display_name"],
+            bool(row["requires_separate_scan"]),
+            bool(row["requires_check"]),
+            bool(row["enabled"]),
+            int(row["sort_order"]),
+        )
+
+    def list_paper_formats(
+        self, project_id: int, *, enabled_only: bool = False
+    ) -> list[PaperFormat]:
+        sql = "SELECT * FROM paper_formats WHERE project_id=?"
+        if enabled_only:
+            sql += " AND enabled=1"
+        sql += " ORDER BY sort_order, code"
+        with self.connect() as conn:
+            rows = conn.execute(sql, (project_id,)).fetchall()
+        return [self._row_to_paper_format(row) for row in rows]
+
+    def save_paper_format(self, paper_format: PaperFormat) -> int:
+        code = paper_format.code.strip().upper()
+        display_name = paper_format.display_name.strip()
+        if not code or any(char in code for char in r'\/:*?"<>|'):
+            raise ValueError("Mã khổ giấy không hợp lệ.")
+        if not display_name:
+            raise ValueError("Cần nhập tên hiển thị của khổ giấy.")
+        now = utc_now()
+        with self.connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO paper_formats(
+                    project_id, code, display_name, requires_separate_scan,
+                    requires_check, enabled, sort_order, created_at, updated_at
+                ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(project_id, code) DO UPDATE SET
+                    display_name=excluded.display_name,
+                    requires_separate_scan=excluded.requires_separate_scan,
+                    requires_check=excluded.requires_check,
+                    enabled=excluded.enabled,
+                    sort_order=excluded.sort_order,
+                    updated_at=excluded.updated_at
+                """,
+                (
+                    paper_format.project_id,
+                    code,
+                    display_name,
+                    int(paper_format.requires_separate_scan),
+                    int(paper_format.requires_check),
+                    int(paper_format.enabled),
+                    max(0, int(paper_format.sort_order)),
+                    now,
+                    now,
+                ),
+            )
+            row = conn.execute(
+                "SELECT id FROM paper_formats WHERE project_id=? AND code=?",
+                (paper_format.project_id, code),
+            ).fetchone()
+            return int(row["id"])
+
     def list_tasks(self, project_id: int) -> list[sqlite3.Row]:
         with self.connect() as conn:
             return conn.execute(
@@ -1013,17 +1239,19 @@ class Database:
         hash_sha256: str | None = None,
     ) -> int:
         now = utc_now()
+        record_key = record_key_from_relative_path(relative_project_path)
         with self.connect() as conn:
             conn.execute(
                 """
                 INSERT INTO backup_files(
                     project_id, client_code, source_path, project_code,
-                    relative_project_path, dest_path, file_size, source_mtime,
+                    relative_project_path, record_key, dest_path, file_size, source_mtime,
                     hash_sha256, status, error_message, created_at
-                ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(project_id, client_code, source_path) DO UPDATE SET
                     project_code=excluded.project_code,
                     relative_project_path=excluded.relative_project_path,
+                    record_key=excluded.record_key,
                     dest_path=excluded.dest_path, file_size=excluded.file_size,
                     source_mtime=excluded.source_mtime,
                     hash_sha256=COALESCE(excluded.hash_sha256, backup_files.hash_sha256),
@@ -1031,7 +1259,7 @@ class Database:
                 """,
                 (
                     project_id, client_code, source_path, project_code,
-                    relative_project_path, dest_path, file_size, source_mtime,
+                    relative_project_path, record_key, dest_path, file_size, source_mtime,
                     hash_sha256, status, error_message, now,
                 ),
             )
@@ -1109,6 +1337,407 @@ class Database:
             params.append(limit)
         with self.connect() as conn:
             return conn.execute(sql, params).fetchall()
+
+    def list_backup_files_page(
+        self,
+        project_id: int,
+        *,
+        limit: int = 50,
+        offset: int = 0,
+        status: str | None = None,
+        search: str = "",
+    ) -> tuple[list[sqlite3.Row], int]:
+        where = ["project_id=?"]
+        params: list[Any] = [project_id]
+        if status:
+            where.append("status=?")
+            params.append(status)
+        if search.strip():
+            term = f"%{search.strip()}%"
+            where.append(
+                """
+                (client_code LIKE ? OR source_path LIKE ?
+                 OR relative_project_path LIKE ? OR dest_path LIKE ?
+                 OR COALESCE(hash_sha256, '') LIKE ?)
+                """
+            )
+            params.extend([term, term, term, term, term])
+        clause = " AND ".join(where)
+        with self.connect() as conn:
+            total = int(
+                conn.execute(
+                    f"SELECT COUNT(*) FROM backup_files WHERE {clause}", params
+                ).fetchone()[0]
+            )
+            rows = conn.execute(
+                f"""
+                SELECT * FROM backup_files
+                WHERE {clause}
+                ORDER BY id DESC LIMIT ? OFFSET ?
+                """,
+                [*params, limit, offset],
+            ).fetchall()
+            return rows, total
+
+    def list_system_records_page(
+        self,
+        project_id: int,
+        *,
+        limit: int = 50,
+        offset: int = 0,
+        search: str = "",
+    ) -> tuple[list[dict[str, Any]], int]:
+        where = ["rk.record_key<>''"]
+        params: dict[str, Any] = {
+            "project_id": project_id,
+            "limit": limit,
+            "offset": offset,
+        }
+        if search.strip():
+            term = f"%{search.strip()}%"
+            where.append(
+                """
+                (rk.record_key LIKE :search
+                 OR COALESCE(bs.client_codes, '') LIKE :search
+                 OR COALESCE(bs.source_paths, '') LIKE :search
+                 OR COALESCE(bs.dest_paths, '') LIKE :search)
+                """
+            )
+            params["search"] = term
+        clause = " AND ".join(where)
+        cte = """
+            WITH latest_import AS (
+                SELECT id FROM mapfile_imports
+                WHERE project_id=:project_id
+                ORDER BY id DESC LIMIT 1
+            ),
+            record_keys AS (
+                SELECT record_key FROM backup_files
+                WHERE project_id=:project_id AND record_key<>''
+                UNION
+                SELECT r.record_key
+                FROM mapfile_rows r
+                JOIN latest_import i ON i.id=r.import_id
+                WHERE r.record_key<>''
+            ),
+            backup_summary AS (
+                SELECT
+                    record_key,
+                    MIN(project_code) AS project_code,
+                    GROUP_CONCAT(DISTINCT client_code) AS client_codes,
+                    GROUP_CONCAT(source_path, ' | ') AS source_paths,
+                    GROUP_CONCAT(dest_path, ' | ') AS dest_paths,
+                    COUNT(*) AS file_count,
+                    COALESCE(SUM(file_size), 0) AS total_size,
+                    MAX(created_at) AS last_seen_at,
+                    MAX(dest_path) AS sample_dest_path,
+                    CASE
+                        WHEN SUM(CASE WHEN status='ERROR' THEN 1 ELSE 0 END) > 0
+                            THEN 'ERROR'
+                        WHEN SUM(CASE WHEN status='CONFLICT' THEN 1 ELSE 0 END) > 0
+                            THEN 'CONFLICT'
+                        WHEN SUM(CASE WHEN status NOT IN (
+                            'VERIFIED_SIZE', 'HASH_PENDING', 'VERIFIED_HASH',
+                            'LOCKED', 'ALREADY_EXISTS'
+                        ) THEN 1 ELSE 0 END) > 0
+                            THEN 'IN_PROGRESS'
+                        ELSE 'BACKED_UP'
+                    END AS backup_status
+                FROM backup_files
+                WHERE project_id=:project_id AND record_key<>''
+                GROUP BY record_key
+            )
+        """
+        with self.connect() as conn:
+            total = int(
+                conn.execute(
+                    f"{cte} SELECT COUNT(*) FROM record_keys rk "
+                    f"LEFT JOIN backup_summary bs ON bs.record_key=rk.record_key "
+                    f"WHERE {clause}",
+                    params,
+                ).fetchone()[0]
+            )
+            rows = conn.execute(
+                f"""{cte}
+                SELECT
+                    rk.record_key,
+                    COALESCE(bs.project_code, project.project_code) AS project_code,
+                    COALESCE(bs.client_codes, '') AS client_codes,
+                    COALESCE(bs.file_count, 0) AS file_count,
+                    COALESCE(bs.total_size, 0) AS total_size,
+                    COALESCE(bs.last_seen_at, '') AS last_seen_at,
+                    bs.sample_dest_path,
+                    rw.id AS workflow_id,
+                    rw.scanner_id,
+                    scanner.full_name AS scanner_name,
+                    rw.scan_date,
+                    rw.checker_id,
+                    checker.full_name AS checker_name,
+                    rw.check_date,
+                    COALESCE(rw.record_status, 'NOT_STARTED') AS record_status,
+                    COALESCE(rw.notes, '') AS workflow_notes,
+                    COALESCE(bs.backup_status, 'NOT_BACKED_UP') AS backup_status
+                FROM record_keys rk
+                JOIN projects project ON project.id=:project_id
+                LEFT JOIN backup_summary bs ON bs.record_key=rk.record_key
+                LEFT JOIN record_workflows rw
+                    ON rw.project_id=:project_id AND rw.record_key=rk.record_key
+                LEFT JOIN project_personnel scanner ON scanner.id=rw.scanner_id
+                LEFT JOIN project_personnel checker ON checker.id=rw.checker_id
+                WHERE {clause}
+                ORDER BY rk.record_key
+                LIMIT :limit OFFSET :offset
+                """,
+                params,
+            ).fetchall()
+            result = [dict(row) for row in rows]
+            workflow_ids = [
+                int(row["workflow_id"])
+                for row in result
+                if row["workflow_id"] is not None
+            ]
+            statuses_by_record: dict[int, dict[str, dict[str, Any]]] = {}
+            if workflow_ids:
+                placeholders = ", ".join("?" for _ in workflow_ids)
+                status_rows = conn.execute(
+                    f"""
+                    SELECT rps.*, pf.code, pf.display_name
+                    FROM record_paper_statuses rps
+                    JOIN paper_formats pf ON pf.id=rps.paper_format_id
+                    WHERE rps.record_id IN ({placeholders})
+                        AND pf.enabled=1
+                    ORDER BY pf.sort_order, pf.code
+                    """,
+                    workflow_ids,
+                ).fetchall()
+                for status_row in status_rows:
+                    record_id = int(status_row["record_id"])
+                    statuses_by_record.setdefault(record_id, {})[
+                        status_row["code"]
+                    ] = dict(status_row)
+            for row in result:
+                workflow_id = row["workflow_id"]
+                row["paper_statuses"] = (
+                    statuses_by_record.get(int(workflow_id), {})
+                    if workflow_id is not None
+                    else {}
+                )
+            return result, total
+
+    def get_record_workflow(
+        self, project_id: int, record_key: str
+    ) -> dict[str, Any]:
+        with self.connect() as conn:
+            row = conn.execute(
+                """
+                SELECT rw.*, scanner.full_name AS scanner_name,
+                    checker.full_name AS checker_name
+                FROM record_workflows rw
+                LEFT JOIN project_personnel scanner ON scanner.id=rw.scanner_id
+                LEFT JOIN project_personnel checker ON checker.id=rw.checker_id
+                WHERE rw.project_id=? AND rw.record_key=?
+                """,
+                (project_id, record_key),
+            ).fetchone()
+            workflow: dict[str, Any] = (
+                dict(row)
+                if row is not None
+                else {
+                    "id": None,
+                    "project_id": project_id,
+                    "record_key": record_key,
+                    "scanner_id": None,
+                    "scan_date": "",
+                    "checker_id": None,
+                    "check_date": "",
+                    "record_status": "NOT_STARTED",
+                    "notes": "",
+                }
+            )
+            paper_rows = conn.execute(
+                """
+                SELECT pf.id AS paper_format_id, pf.code, pf.display_name,
+                    COALESCE(rps.scan_status, 'UNKNOWN') AS scan_status,
+                    COALESCE(rps.scan_pages, 0) AS scan_pages,
+                    COALESCE(rps.check_pages, 0) AS check_pages,
+                    COALESCE(rps.notes, '') AS notes
+                FROM paper_formats pf
+                LEFT JOIN record_paper_statuses rps
+                    ON rps.paper_format_id=pf.id AND rps.record_id=?
+                WHERE pf.project_id=? AND pf.enabled=1
+                ORDER BY pf.sort_order, pf.code
+                """,
+                (workflow["id"], project_id),
+            ).fetchall()
+            workflow["paper_statuses"] = [dict(paper_row) for paper_row in paper_rows]
+            return workflow
+
+    def save_record_workflow(
+        self,
+        *,
+        project_id: int,
+        record_key: str,
+        scanner_id: int | None,
+        scan_date: str,
+        checker_id: int | None,
+        check_date: str,
+        record_status: str,
+        notes: str,
+        paper_statuses: list[dict[str, Any]],
+    ) -> int:
+        record_key = record_key.strip().replace("\\", "/").strip("/")
+        if not record_key:
+            raise ValueError("Không xác định được mã hồ sơ.")
+        if record_status not in RECORD_WORKFLOW_STATUSES:
+            raise ValueError("Trạng thái hồ sơ không hợp lệ.")
+        for label, value in (("Ngày Scan", scan_date), ("Ngày Check", check_date)):
+            if not value.strip():
+                continue
+            try:
+                datetime.strptime(value.strip(), "%Y-%m-%d")
+            except ValueError as exc:
+                raise ValueError(f"{label} phải có định dạng YYYY-MM-DD.") from exc
+        format_ids = {int(item["paper_format_id"]) for item in paper_statuses}
+        with self.connect() as conn:
+            valid_formats = {
+                int(row["id"]): row["code"]
+                for row in conn.execute(
+                    "SELECT id, code FROM paper_formats WHERE project_id=?",
+                    (project_id,),
+                )
+                if int(row["id"]) in format_ids
+            }
+            if len(valid_formats) != len(format_ids):
+                raise ValueError("Danh mục khổ giấy không thuộc dự án.")
+
+            statuses_by_code: dict[str, str] = {}
+            normalized_papers: list[tuple[int, str, int, int, str]] = []
+            for item in paper_statuses:
+                format_id = int(item["paper_format_id"])
+                scan_status = str(item.get("scan_status", "UNKNOWN"))
+                if scan_status not in PAPER_SCAN_STATUSES:
+                    raise ValueError("Trạng thái scan khổ giấy không hợp lệ.")
+                try:
+                    scan_pages = int(item.get("scan_pages") or 0)
+                    check_pages = int(item.get("check_pages") or 0)
+                except (TypeError, ValueError) as exc:
+                    raise ValueError("Số trang scan/check phải là số nguyên.") from exc
+                if scan_pages < 0 or check_pages < 0:
+                    raise ValueError("Số trang scan/check không được âm.")
+                if scan_status in {"UNKNOWN", "NOT_PRESENT"} and (
+                    scan_pages or check_pages
+                ):
+                    raise ValueError(
+                        f"{valid_formats[format_id]} chưa có dữ liệu nhưng số trang khác 0."
+                    )
+                if scan_status in {"SCANNED", "CHECKED"} and scan_pages == 0:
+                    raise ValueError(
+                        f"{valid_formats[format_id]} đã scan nhưng chưa nhập số trang Scan."
+                    )
+                if scan_status == "CHECKED" and check_pages == 0:
+                    raise ValueError(
+                        f"{valid_formats[format_id]} đã check nhưng chưa nhập số trang Check."
+                    )
+                statuses_by_code[valid_formats[format_id]] = scan_status
+                normalized_papers.append(
+                    (
+                        format_id,
+                        scan_status,
+                        scan_pages,
+                        check_pages,
+                        str(item.get("notes", "")).strip(),
+                    )
+                )
+
+            if (
+                statuses_by_code.get("A4") in {"SCANNED", "CHECKED"}
+                and statuses_by_code.get("A3") == "UNKNOWN"
+            ):
+                raise ValueError(
+                    "Đã scan A4: cần xác nhận hồ sơ không có A3 hoặc cập nhật trạng thái A3."
+                )
+
+            for personnel_id in (scanner_id, checker_id):
+                if personnel_id is None:
+                    continue
+                exists = conn.execute(
+                    "SELECT 1 FROM project_personnel WHERE id=? AND project_id=?",
+                    (personnel_id, project_id),
+                ).fetchone()
+                if not exists:
+                    raise ValueError("Nhân sự được chọn không thuộc dự án.")
+
+            now = utc_now()
+            conn.execute(
+                """
+                INSERT INTO record_workflows(
+                    project_id, record_key, scanner_id, scan_date, checker_id,
+                    check_date, record_status, notes, created_at, updated_at
+                ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(project_id, record_key) DO UPDATE SET
+                    scanner_id=excluded.scanner_id,
+                    scan_date=excluded.scan_date,
+                    checker_id=excluded.checker_id,
+                    check_date=excluded.check_date,
+                    record_status=excluded.record_status,
+                    notes=excluded.notes,
+                    updated_at=excluded.updated_at
+                """,
+                (
+                    project_id,
+                    record_key,
+                    scanner_id,
+                    scan_date.strip(),
+                    checker_id,
+                    check_date.strip(),
+                    record_status,
+                    notes.strip(),
+                    now,
+                    now,
+                ),
+            )
+            workflow_id = int(
+                conn.execute(
+                    """
+                    SELECT id FROM record_workflows
+                    WHERE project_id=? AND record_key=?
+                    """,
+                    (project_id, record_key),
+                ).fetchone()["id"]
+            )
+            for format_id, status, scan_pages, check_pages, paper_notes in normalized_papers:
+                conn.execute(
+                    """
+                    INSERT INTO record_paper_statuses(
+                        record_id, paper_format_id, scan_status, scan_pages,
+                        check_pages, notes, updated_at
+                    ) VALUES(?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(record_id, paper_format_id) DO UPDATE SET
+                        scan_status=excluded.scan_status,
+                        scan_pages=excluded.scan_pages,
+                        check_pages=excluded.check_pages,
+                        notes=excluded.notes,
+                        updated_at=excluded.updated_at
+                    """,
+                    (
+                        workflow_id,
+                        format_id,
+                        status,
+                        scan_pages,
+                        check_pages,
+                        paper_notes,
+                        now,
+                    ),
+                )
+            conn.execute(
+                """
+                INSERT INTO audit_logs(
+                    project_id, action, message, created_at
+                ) VALUES(?, 'RECORD_WORKFLOW_UPDATED', ?, ?)
+                """,
+                (project_id, f"Updated workflow for {record_key}", now),
+            )
+            return workflow_id
 
     def record_conflict(
         self,
@@ -1258,17 +1887,51 @@ class Database:
             conn.executemany(
                 """
                 INSERT INTO mapfile_rows(
-                    row_number, import_id, raw_json, expected_relative_path
-                ) VALUES(?, ?, ?, ?)
+                    row_number, import_id, raw_json, expected_relative_path, record_key
+                ) VALUES(?, ?, ?, ?, ?)
                 """,
                 [
-                    (number, import_id, json.dumps(raw, ensure_ascii=False), expected)
+                    (
+                        number,
+                        import_id,
+                        json.dumps(raw, ensure_ascii=False),
+                        expected,
+                        record_key_from_expected_path(expected),
+                    )
                     for number, raw, expected in rows
                 ],
             )
             conn.execute(
                 "UPDATE mapfile_imports SET row_count=? WHERE id=?", (len(rows), import_id)
             )
+
+    def append_mapfile_row(self, import_id: int, raw: dict[str, Any], expected: str) -> int:
+        with self.connect() as conn:
+            row_number = int(
+                conn.execute(
+                    "SELECT COALESCE(MAX(row_number), 1) + 1 FROM mapfile_rows WHERE import_id=?",
+                    (import_id,),
+                ).fetchone()[0]
+            )
+            cur = conn.execute(
+                """
+                INSERT INTO mapfile_rows(
+                    row_number, import_id, raw_json, expected_relative_path, record_key
+                ) VALUES(?, ?, ?, ?, ?)
+                """,
+                (
+                    row_number,
+                    import_id,
+                    json.dumps(raw, ensure_ascii=False),
+                    expected,
+                    record_key_from_expected_path(expected),
+                ),
+            )
+            conn.execute(
+                "UPDATE mapfile_imports SET row_count=row_count + 1 WHERE id=?",
+                (import_id,),
+            )
+            return int(cur.lastrowid)
 
     def latest_mapfile_import_id(self, project_id: int) -> int | None:
         with self.connect() as conn:
@@ -1300,6 +1963,27 @@ class Database:
             conn.execute(
                 "UPDATE mapfile_rows SET status=?, message=? WHERE id=?",
                 (status, message, row_id),
+            )
+
+    def update_mapfile_row_source(
+        self,
+        row_id: int,
+        raw: dict[str, Any],
+        expected_relative_path: str,
+    ) -> None:
+        with self.connect() as conn:
+            conn.execute(
+                """
+                UPDATE mapfile_rows
+                SET raw_json=?, expected_relative_path=?, record_key=?
+                WHERE id=?
+                """,
+                (
+                    json.dumps(raw, ensure_ascii=False),
+                    expected_relative_path,
+                    record_key_from_expected_path(expected_relative_path),
+                    row_id,
+                ),
             )
 
     def mark_mapfile_row_done(

@@ -60,6 +60,18 @@ class Personnel:
 
 
 @dataclass(slots=True)
+class PaperFormat:
+    id: int | None
+    project_id: int
+    code: str
+    display_name: str
+    requires_separate_scan: bool = True
+    requires_check: bool = True
+    enabled: bool = True
+    sort_order: int = 0
+
+
+@dataclass(slots=True)
 class ProjectTask:
     id: int | None
     project_id: int

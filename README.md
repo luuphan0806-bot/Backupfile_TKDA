@@ -38,7 +38,7 @@ scan-backup-manager/
 │           └── views/
 │               ├── overview.py
 │               ├── project_list.py
-│               ├── project_console/   (5 tabs: dashboard, mapfile, tasks, statistics, settings)
+│               ├── project_console/   (6 tabs: dashboard, mapfile, system mapfile, tasks, statistics, settings)
 │               ├── global_settings.py
 │               └── audit.py
 ├── tests/
@@ -109,13 +109,17 @@ The top-level menu has exactly four sections:
 - **Nhật ký hệ thống** -- a filterable view over the `audit_logs` table
   (by project, action, workstation, date range).
 
-Opening a project from the list leads to its own console with 5 tabs:
+Opening a project from the list leads to its own console with 6 tabs:
 
 - **Bảng điều khiển** -- KPIs, workstation health, recent activity, open
   conflicts, and the manual "Chạy backup ngay" / "Kiểm tra hash" actions.
 - **Danh mục hồ sơ** -- the imported Excel list and the **Đã quét xong**
   progress marker. The Windows service remains responsible for automatic
   backup; personnel cannot trigger file operations.
+- **Mapfile hệ thống** -- the searchable, paginated index of files discovered
+  and imported records, grouped by case. It tracks scanner/checker, scan/check
+  dates, paper-size status and page-count differences, backup status, and opens
+  the case folder directly without exposing a long path column.
 - **Công việc** -- tasks assigned to project personnel.
 - **Thống kê** -- productivity by day/personnel, completion ratio, and
   Done-to-backup latency, with an Excel export.
@@ -128,6 +132,7 @@ In a project's **Cấu hình** tab, configure:
 
 - Project code and display name
 - Backup, staging, conflict archive, and reports directories
+- Paper-size catalog (A4/A3 by default, with support for additional formats)
 - A required ordered directory tree
 
 Each directory level supports one validation type:
