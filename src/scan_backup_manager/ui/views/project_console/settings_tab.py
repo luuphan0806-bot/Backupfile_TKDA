@@ -9,6 +9,7 @@ from ....models import (
     Client,
     DirectoryLevel,
     MapfileProfile,
+    PaperFormat,
     Personnel,
     Project,
     ProjectSettings,
@@ -217,9 +218,27 @@ def _build_paper_formats_section(ctx) -> ft.Control:
     db = ctx.db
     formats_by_code = {item.code: item for item in db.list_paper_formats(ctx.project_id)}
     formats = [formats_by_code[code] for code in ("A4", "A3", "A0") if code in formats_by_code]
+    status_text = ft.Text("", color=ft.Colors.PRIMARY)
+
+    def save_enabled(item, value: bool) -> None:
+        db.save_paper_format(
+            PaperFormat(
+                item.id,
+                item.project_id,
+                item.code,
+                item.display_name,
+                item.requires_separate_scan,
+                item.requires_check,
+                value,
+                item.sort_order,
+            )
+        )
+        status_text.value = f"Đã {'bật' if value else 'tắt'} khổ {item.code}."
+        ctx.refresh()
 
     table = ft.DataTable(
         columns=[
+            ft.DataColumn(ft.Text("Áp dụng")),
             ft.DataColumn(ft.Text("Mã")),
             ft.DataColumn(ft.Text("Tên hiển thị")),
             ft.DataColumn(ft.Text("Phần Scan")),
@@ -228,6 +247,14 @@ def _build_paper_formats_section(ctx) -> ft.Control:
         rows=[
             ft.DataRow(
                 cells=[
+                    ft.DataCell(
+                        ft.Checkbox(
+                            value=item.enabled,
+                            on_change=lambda event, current=item: save_enabled(
+                                current, bool(event.control.value)
+                            ),
+                        )
+                    ),
                     ft.DataCell(ft.Text(item.code, weight=ft.FontWeight.BOLD)),
                     ft.DataCell(ft.Text(item.display_name)),
                     ft.DataCell(ft.Text("Người Scan / Ngày Scan / Số Trang")),
@@ -240,10 +267,11 @@ def _build_paper_formats_section(ctx) -> ft.Control:
 
     return _section(
         "Danh mục khổ giấy",
-        "Cố định ba khổ giấy A4, A3, A0. Scan theo dõi riêng từng khổ; Check dùng chung người check và nhập số trang theo từng khổ.",
+        "Cố định ba khổ giấy A4, A3, A0. Tích chọn khổ xuất hiện trong dự án; Mapfile hệ thống chỉ hiển thị các khổ đang áp dụng.",
         ft.Column(
             spacing=10,
             controls=[
+                status_text,
                 table,
             ],
         ),

@@ -4,7 +4,7 @@ from scan_backup_manager.db import Database
 import pytest
 
 from scan_backup_manager.mapfile import MapfileService
-from scan_backup_manager.models import Client, Personnel, Project
+from scan_backup_manager.models import Client, PaperFormat, Personnel, Project
 
 
 def _create_project(db: Database, tmp_path: Path) -> int:
@@ -215,6 +215,28 @@ def test_manual_record_can_create_client_folder(tmp_path: Path) -> None:
     )
 
     assert (share / "PROJECT_ALPHA" / "2026" / "HS" / "010").is_dir()
+
+
+def test_project_can_enable_subset_of_paper_formats(tmp_path: Path) -> None:
+    db = Database(tmp_path / "app.sqlite3")
+    project_id = _create_project(db, tmp_path)
+    formats = {item.code: item for item in db.list_paper_formats(project_id)}
+
+    db.save_paper_format(
+        PaperFormat(
+            formats["A0"].id,
+            project_id,
+            "A0",
+            formats["A0"].display_name,
+            formats["A0"].requires_separate_scan,
+            formats["A0"].requires_check,
+            False,
+            formats["A0"].sort_order,
+        )
+    )
+
+    enabled_codes = [item.code for item in db.list_paper_formats(project_id, enabled_only=True)]
+    assert enabled_codes == ["A4", "A3"]
 
 
 def test_system_mapfile_can_duplicate_manual_record_with_next_number(tmp_path: Path) -> None:
