@@ -6,17 +6,15 @@ from ...theme import content_switcher
 
 (
     TAB_DASHBOARD,
-    TAB_MAPFILE,
+    TAB_CATALOG,
     TAB_SYSTEM_MAPFILE,
-    TAB_TASKS,
     TAB_STATISTICS,
     TAB_SETTINGS,
-) = range(6)
+) = range(5)
 TAB_LABELS = [
     "Bảng điều hành",
     "Danh mục hồ sơ",
     "Mapfile hệ thống",
-    "Công việc",
     "Thống kê",
     "Cấu hình",
 ]
@@ -70,19 +68,17 @@ class ConsoleContext:
 
     def _build_tab_content(self) -> ft.Control:
         from . import (
+            catalog_tab,
             dashboard_tab,
-            mapfile_tab,
             settings_tab,
             statistics_tab,
             system_mapfile_tab,
-            tasks_tab,
         )
 
         builders = {
             TAB_DASHBOARD: dashboard_tab.build,
-            TAB_MAPFILE: mapfile_tab.build,
+            TAB_CATALOG: catalog_tab.build,
             TAB_SYSTEM_MAPFILE: system_mapfile_tab.build,
-            TAB_TASKS: tasks_tab.build,
             TAB_STATISTICS: statistics_tab.build,
             TAB_SETTINGS: settings_tab.build,
         }

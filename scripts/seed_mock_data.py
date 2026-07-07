@@ -24,7 +24,6 @@ from scan_backup_manager.models import (
     Personnel,
     Project,
     ProjectSettings,
-    ProjectTask,
 )
 from scan_backup_manager.reports import ReportService
 
@@ -212,12 +211,6 @@ def seed_database(paths: dict[str, Path]) -> None:
     person_id = db.save_personnel(
         Personnel(None, project_id, "NV001", "Nguyễn Văn A", "Nhân sự scan", True)
     )
-    db.save_task(
-        ProjectTask(
-            None, project_id, "CV001", "Scan hồ sơ đợt 1",
-            "Xử lý dữ liệu mẫu", person_id, "2026-12-31", "NORMAL", "NEW",
-        )
-    )
 
     manager = BackupManager(db)
     backup_result = manager.run_all_enabled(project_id)
@@ -293,19 +286,6 @@ def seed_database(paths: dict[str, Path]) -> None:
     )
     old_person_id = db.save_personnel(
         Personnel(None, old_id, "NV_CU", "Nguyễn Văn A", "Nhân sự scan", True)
-    )
-    db.save_task(
-        ProjectTask(
-            None,
-            old_id,
-            "CV_CU_001",
-            "Rà soát hiển thị cấu trúc cũ",
-            "Kiểm tra cây thư mục legacy và mapfile tương ứng",
-            old_person_id,
-            "2026-12-31",
-            "NORMAL",
-            "NEW",
-        )
     )
     old_result = BackupManager(db).run_all_enabled(old_id)
     old_import_id = MapfileService(db).import_excel(old_id, paths["mapfile_old"])

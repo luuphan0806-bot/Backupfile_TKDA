@@ -222,7 +222,6 @@ class ScanBackupFletApp:
         person = next(
             (p for p in self.db.list_personnel(project_id) if p.id == personnel_id), None
         )
-        tasks = [row for row in self.db.list_tasks(project_id) if row["assignee_id"] == personnel_id]
         import_id = self.db.latest_mapfile_import_id(project_id)
         rows, total = (
             self.db.list_mapfile_rows_page(import_id, limit=50) if import_id else ([], 0)
@@ -235,20 +234,6 @@ class ScanBackupFletApp:
                 self.db.unmark_mapfile_row_done(row_id)
             self.show_personnel_home()
 
-        task_table = ft.DataTable(
-            columns=[
-                ft.DataColumn(ft.Text("Mã việc")), ft.DataColumn(ft.Text("Nội dung")),
-                ft.DataColumn(ft.Text("Hạn hoàn thành")), ft.DataColumn(ft.Text("Trạng thái")),
-            ],
-            rows=[
-                ft.DataRow(cells=[
-                    ft.DataCell(ft.Text(row["task_code"])),
-                    ft.DataCell(ft.Text(row["title"])),
-                    ft.DataCell(ft.Text(row["due_date"])),
-                    ft.DataCell(ft.Text(row["status"])),
-                ]) for row in tasks
-            ],
-        )
         record_table = ft.DataTable(
             columns=[
                 ft.DataColumn(ft.Text("Dòng")), ft.DataColumn(ft.Text("Hồ sơ")),
@@ -288,8 +273,6 @@ class ScanBackupFletApp:
                     content=ft.Column(
                         scroll=ft.ScrollMode.AUTO,
                         controls=[
-                            ft.Text("Công việc của tôi", size=18, weight=ft.FontWeight.BOLD),
-                            task_table if tasks else ft.Text("Chưa có công việc được giao."),
                             ft.Text(f"Danh mục hồ sơ ({total})", size=18, weight=ft.FontWeight.BOLD),
                             record_table if rows else ft.Text("Chưa có danh mục hồ sơ."),
                         ],
