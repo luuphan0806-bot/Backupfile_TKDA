@@ -546,8 +546,9 @@ def build(ctx) -> ft.Control:
         }
         scanner = ft.Dropdown(
             dense=True,
-            width=180,
+            width=150,
             value=saved["scanner_id"],
+            label="Người Scan",
             options=[
                 ft.dropdown.Option(key="", text="--"),
                 *[
@@ -560,15 +561,16 @@ def build(ctx) -> ft.Control:
         scan_date = ft.TextField(
             value=saved["scan_date"],
             dense=True,
-            width=112,
+            width=150,
+            label="Ngày Scan",
             hint_text="YYYY-MM-DD",
             content_padding=ft.Padding.symmetric(vertical=6, horizontal=8),
         )
         pages = ft.TextField(
             value=saved["scan_pages"],
             dense=True,
-            width=76,
-            label="Trang",
+            width=92,
+            label="Số Trang",
             keyboard_type=ft.KeyboardType.NUMBER,
             content_padding=ft.Padding.symmetric(vertical=6, horizontal=8),
         )
@@ -606,14 +608,27 @@ def build(ctx) -> ft.Control:
                 pages.value = saved["scan_pages"]
 
         return ft.DataCell(
-            ft.Row(
-                spacing=6,
-                controls=[
-                    scanner,
-                    scan_date,
-                    pages,
-                    ft.IconButton(icon=ft.Icons.SAVE, tooltip=f"Lưu Scan {paper_format.code}", on_click=commit),
-                ],
+            ft.Container(
+                width=170,
+                padding=ft.Padding.symmetric(vertical=4, horizontal=0),
+                content=ft.Column(
+                    spacing=4,
+                    controls=[
+                        scanner,
+                        ft.Row(
+                            spacing=4,
+                            controls=[
+                                pages,
+                                ft.IconButton(
+                                    icon=ft.Icons.SAVE,
+                                    tooltip=f"Lưu Scan {paper_format.code}",
+                                    on_click=commit,
+                                ),
+                            ],
+                        ),
+                        scan_date,
+                    ],
+                ),
             )
         )
 
@@ -623,7 +638,8 @@ def build(ctx) -> ft.Control:
         pages = ft.TextField(
             value=saved["check_pages"],
             dense=True,
-            width=76,
+            width=82,
+            label="Trang",
             keyboard_type=ft.KeyboardType.NUMBER,
             content_padding=ft.Padding.symmetric(vertical=6, horizontal=8),
         )
@@ -669,7 +685,7 @@ def build(ctx) -> ft.Control:
     columns.extend(
         [
             *[
-                ft.DataColumn(ft.Text(f"{paper_format.code}: Người Scan / Ngày Scan / Số Trang"))
+                ft.DataColumn(ft.Text(f"Scan {paper_format.code}"))
                 for paper_format in paper_formats
             ],
             ft.DataColumn(ft.Text("Người Check")),
