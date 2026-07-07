@@ -7,7 +7,7 @@ from openpyxl import Workbook
 
 from scan_backup_manager.db import Database
 from scan_backup_manager.mapfile import MapfileService
-from scan_backup_manager.models import Project
+from scan_backup_manager.models import DirectoryLevel, Project
 from scan_backup_manager.reports import ReportService
 
 
@@ -41,6 +41,35 @@ def test_mapfile_import_and_reconcile_missing(tmp_path: Path) -> None:
     assert len(rows) == 1
     assert rows[0]["status"] == "MISSING"
     assert rows[0]["expected_relative_path"] == str(Path("CSDL_SOHOA_A") / "2023" / "HS" / "123" / "1.pdf")
+
+
+def test_mapfile_import_uses_configured_directory_level_columns(tmp_path: Path) -> None:
+    db = Database(tmp_path / "app.sqlite3")
+    project_id = make_project(db, tmp_path)
+    db.save_directory_levels(
+        project_id,
+        [
+            DirectoryLevel(None, project_id, 1, "Nhân sự", "TEXT", []),
+            DirectoryLevel(None, project_id, 2, "Ngày", "TEXT", []),
+            DirectoryLevel(None, project_id, 3, "Công đoạn", "ENUM", ["SCAN"]),
+            DirectoryLevel(None, project_id, 4, "Năm", "YEAR4", []),
+            DirectoryLevel(None, project_id, 5, "Loại hồ sơ", "ENUM", ["HS"]),
+            DirectoryLevel(None, project_id, 6, "Mã hồ sơ", "TEXT", []),
+        ],
+    )
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.append(["project", "Nhân sự", "Ngày", "Công đoạn", "Năm", "Loại hồ sơ", "Mã hồ sơ", "file_name"])
+    sheet.append(["CSDL_SOHOA_A", "NGUYENVANA", "24052026", "SCAN", "2023", "HS", "123", "1.pdf"])
+    mapfile_path = tmp_path / "dynamic_mapfile.xlsx"
+    workbook.save(mapfile_path)
+
+    import_id = MapfileService(db).import_excel(project_id, mapfile_path)
+    row = db.list_mapfile_rows(import_id)[0]
+
+    assert row["expected_relative_path"] == str(
+        Path("CSDL_SOHOA_A") / "NGUYENVANA" / "24052026" / "SCAN" / "2023" / "HS" / "123" / "1.pdf"
+    )
 
 
 def test_mapfile_done_flag_survives_reconcile_and_reimport(tmp_path: Path) -> None:

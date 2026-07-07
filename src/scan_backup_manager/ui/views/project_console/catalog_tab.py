@@ -118,7 +118,7 @@ def build(ctx) -> ft.Control:
     summary_rows = [
         ft.DataRow(
             selected=index == selected_index,
-            on_select_changed=lambda _selected, selected=index: select_level(selected),
+            on_select_change=lambda _event, selected=index: select_level(selected),
             cells=[
                 ft.DataCell(ft.Text(str(index + 1))),
                 ft.DataCell(ft.Text(level.display_name, weight=ft.FontWeight.BOLD)),

@@ -102,7 +102,7 @@ def _build_project_section(ctx) -> ft.Control:
             levels_error.value = "Cần nhập tên tầng thư mục."
             ctx.page.update()
             return
-        values = [v.strip().upper() for v in (level_values_field.value or "").split(",") if v.strip()]
+        values = [v.strip() for v in (level_values_field.value or "").split(",") if v.strip()]
         if level_type_dropdown.value == "ENUM" and not values:
             levels_error.value = "Tầng kiểu danh sách cần có ít nhất một giá trị hợp lệ."
             ctx.page.update()

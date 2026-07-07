@@ -928,9 +928,14 @@ class Database:
                     raise ValueError("Directory level name is required")
                 if level.validation_type not in {"YEAR4", "ENUM", "INTEGER", "TEXT"}:
                     raise ValueError(f"Unsupported directory validation type: {level.validation_type}")
-                allowed = sorted({
-                    value.strip().upper() for value in level.allowed_values if value.strip()
-                })
+                allowed_by_key: dict[str, str] = {}
+                for value in level.allowed_values:
+                    clean_value = value.strip()
+                    if not clean_value:
+                        continue
+                    key = clean_value.upper() if level.validation_type == "ENUM" else clean_value
+                    allowed_by_key.setdefault(key, clean_value)
+                allowed = sorted(allowed_by_key.values())
                 if level.validation_type == "ENUM" and not allowed:
                     raise ValueError(f"Allowed values are required for {display_name}")
                 conn.execute(

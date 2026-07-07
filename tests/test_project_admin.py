@@ -61,6 +61,23 @@ def test_single_project_and_dynamic_levels(tmp_path: Path) -> None:
     ]
 
 
+def test_directory_level_allowed_values_preserve_display_text(tmp_path: Path) -> None:
+    db = Database(tmp_path / "app.sqlite3")
+    project = configure_project(db, tmp_path)
+
+    db.save_directory_levels(
+        project.id or 0,
+        [
+            DirectoryLevel(None, project.id or 0, 1, "Nhân sự", "TEXT", ["Nguyễn Văn A"]),
+            DirectoryLevel(None, project.id or 0, 2, "Loại hồ sơ", "ENUM", ["Hồ sơ"]),
+        ],
+    )
+
+    levels = db.list_directory_levels(project.id or 0)
+    assert levels[0].allowed_values == ["Nguyễn Văn A"]
+    assert levels[1].allowed_values == ["Hồ sơ"]
+
+
 def test_multiple_projects_do_not_leak_data(tmp_path: Path) -> None:
     db = Database(tmp_path / "app.sqlite3")
     project_a = configure_project(db, tmp_path)

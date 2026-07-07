@@ -51,7 +51,12 @@ def build(ctx) -> ft.Control:
         status_banner.color = ft.Colors.ERROR if failed else ft.Colors.PRIMARY
         ctx.refresh()
 
-    picker = ft.FilePicker()
+    picker = state.get("_picker")
+    if picker is None:
+        picker = ft.FilePicker()
+        state["_picker"] = picker
+    if picker not in ctx.page.overlay:
+        ctx.page.overlay.append(picker)
 
     async def do_import(_event) -> None:
         result = await picker.pick_files(

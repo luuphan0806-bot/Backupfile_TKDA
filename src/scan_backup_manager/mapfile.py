@@ -29,6 +29,16 @@ def normalize_expected_path(
     return str(Path(project.strip()) / year.strip() / case_type.strip().upper() / case_number.strip() / file_name.strip())
 
 
+def normalize_dynamic_expected_path(
+    project: str,
+    directory_values: list[str],
+    file_name: str,
+) -> str:
+    file_name = file_name.strip()
+    file_name = file_name if file_name.lower().endswith(".pdf") else f"{file_name}.pdf"
+    return str(Path(project.strip()) / Path(*[value.strip() for value in directory_values]) / file_name)
+
+
 class MapfileService:
     def __init__(self, db: Database):
         self.db = db
@@ -41,13 +51,17 @@ class MapfileService:
         worksheet = workbook[profile.sheet_name] if profile.sheet_name else workbook.active
         header_row = next(worksheet.iter_rows(min_row=1, max_row=1, values_only=True))
         headers = {normalize_cell(value): index for index, value in enumerate(header_row)}
-        required = [
-            profile.project_column,
+        directory_levels = self.db.list_directory_levels(project_id)
+        dynamic_level_columns = [level.display_name for level in directory_levels]
+        has_dynamic_columns = bool(dynamic_level_columns) and all(
+            column in headers for column in dynamic_level_columns
+        )
+        level_columns = dynamic_level_columns if has_dynamic_columns else [
             profile.year_column,
             profile.case_type_column,
             profile.case_number_column,
-            profile.file_name_column,
         ]
+        required = [profile.project_column, *level_columns, profile.file_name_column]
         missing = [column for column in required if column not in headers]
         if missing:
             raise ValueError(f"Missing mapfile columns: {', '.join(missing)}")
@@ -70,13 +84,20 @@ class MapfileService:
             raw = {header: normalize_cell(values[index]) for header, index in headers.items() if header}
             if not any(raw.values()):
                 continue
-            expected = normalize_expected_path(
-                raw.get(profile.project_column, ""),
-                raw.get(profile.year_column, ""),
-                raw.get(profile.case_type_column, ""),
-                raw.get(profile.case_number_column, ""),
-                raw.get(profile.file_name_column, ""),
-            )
+            if has_dynamic_columns:
+                expected = normalize_dynamic_expected_path(
+                    raw.get(profile.project_column, ""),
+                    [raw.get(column, "") for column in level_columns],
+                    raw.get(profile.file_name_column, ""),
+                )
+            else:
+                expected = normalize_expected_path(
+                    raw.get(profile.project_column, ""),
+                    raw.get(profile.year_column, ""),
+                    raw.get(profile.case_type_column, ""),
+                    raw.get(profile.case_number_column, ""),
+                    raw.get(profile.file_name_column, ""),
+                )
             rows.append((row_number, raw, expected))
         self.db.add_mapfile_rows(import_id, rows)
 
@@ -147,13 +168,22 @@ class MapfileService:
         raw[column_name] = normalize_cell(value)
 
         profile = self.db.get_mapfile_profile(project_id)
-        expected = normalize_expected_path(
-            raw.get(profile.project_column, ""),
-            raw.get(profile.year_column, ""),
-            raw.get(profile.case_type_column, ""),
-            raw.get(profile.case_number_column, ""),
-            raw.get(profile.file_name_column, ""),
-        )
+        directory_levels = self.db.list_directory_levels(project_id)
+        dynamic_level_columns = [level.display_name for level in directory_levels]
+        if dynamic_level_columns and all(column in raw for column in dynamic_level_columns):
+            expected = normalize_dynamic_expected_path(
+                raw.get(profile.project_column, ""),
+                [raw.get(column, "") for column in dynamic_level_columns],
+                raw.get(profile.file_name_column, ""),
+            )
+        else:
+            expected = normalize_expected_path(
+                raw.get(profile.project_column, ""),
+                raw.get(profile.year_column, ""),
+                raw.get(profile.case_type_column, ""),
+                raw.get(profile.case_number_column, ""),
+                raw.get(profile.file_name_column, ""),
+            )
         self.db.update_mapfile_row_source(row_id, raw, expected)
         status = self.reconcile_row(project_id, row_id)
         self.db.record_audit(
