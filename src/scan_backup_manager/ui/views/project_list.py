@@ -8,8 +8,8 @@ from ...models import Project
 def _directory_field(shell, label: str, initial: str = "") -> tuple[ft.TextField, ft.Control]:
     field = ft.TextField(label=label, value=initial, expand=True)
     picker = ft.FilePicker()
-    if picker not in shell.page.overlay:
-        shell.page.overlay.append(picker)
+    if picker not in shell.page.services:
+        shell.page.services.append(picker)
 
     async def browse(_event) -> None:
         selected = await picker.get_directory_path(dialog_title=label)

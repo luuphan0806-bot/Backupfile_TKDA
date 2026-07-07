@@ -262,8 +262,8 @@ def _build_clients_section(ctx) -> ft.Control:
     if picker is None:
         picker = ft.FilePicker()
         ctx.view_state["settings_clients"]["_picker"] = picker
-    if picker not in ctx.page.overlay:
-        ctx.page.overlay.append(picker)
+    if picker not in ctx.page.services:
+        ctx.page.services.append(picker)
 
     def save_client(_event) -> None:
         code = (code_field.value or "").strip()
@@ -356,8 +356,8 @@ def _build_personnel_section(ctx) -> ft.Control:
     if picker is None:
         picker = ft.FilePicker()
         ctx.view_state["settings_personnel"]["_picker"] = picker
-    if picker not in ctx.page.overlay:
-        ctx.page.overlay.append(picker)
+    if picker not in ctx.page.services:
+        ctx.page.services.append(picker)
 
     def save_personnel(_event) -> None:
         code = (code_field.value or "").strip()
