@@ -6,7 +6,7 @@ from ..constants import APP_NAME, runtime_db_path
 from ..db import Database
 from ..logging_config import get_logger, setup_logging
 from .state import AppState
-from .theme import SIDEBAR_SLIDE_CURVE, SIDEBAR_SLIDE_MS, apply_theme, content_switcher
+from .theme import apply_theme, content_switcher
 from .views import audit as audit_view
 from .views import global_settings as settings_view
 from .views import overview as overview_view
@@ -414,7 +414,6 @@ class ScanBackupFletApp:
         self.sidebar_container = ft.Container(
             width=72 if self.sidebar_collapsed else 220,
             clip_behavior=ft.ClipBehavior.HARD_EDGE,
-            animate=ft.Animation(SIDEBAR_SLIDE_MS, SIDEBAR_SLIDE_CURVE),
             content=rail,
         )
 

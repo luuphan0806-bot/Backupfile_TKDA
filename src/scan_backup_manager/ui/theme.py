@@ -24,29 +24,10 @@ DANGER = "#FF3B5C"
 INFO = "#4C8DFF"
 NEUTRAL = "#8B94A7"
 
-# Shared animation timings so every screen transitions the same way -- plain
-# opacity-only cross-fade (cheapest transition for Flutter to composite, and
-# the least distracting one -- no geometry/scale change to draw the eye)
-# rather than a scale/slide pop, which reads as jarring on content-heavy
-# screens (tables, forms) switched often. Kept very short on purpose: just
-# enough to avoid a hard flicker, but reads as instant rather than "loading".
-CONTENT_FADE_MS = 60
-CONTENT_FADE_CURVE = ft.AnimationCurve.EASE_OUT
-SIDEBAR_SLIDE_MS = 100
-SIDEBAR_SLIDE_CURVE = ft.AnimationCurve.EASE_OUT
-
-
-def content_switcher(initial: ft.Control | None = None) -> ft.AnimatedSwitcher:
-    """A small, consistent cross-fade used for every "swap this screen's
-    content" spot in the app (top-level nav, project console tabs). Plain
-    fade only -- no scale/slide -- so frequent refreshes stay calm instead of
-    popping/zooming."""
-    return ft.AnimatedSwitcher(
+def content_switcher(initial: ft.Control | None = None) -> ft.Container:
+    """Plain content host used for screen swaps without transition animation."""
+    return ft.Container(
         content=initial or ft.Container(),
-        duration=CONTENT_FADE_MS,
-        switch_in_curve=CONTENT_FADE_CURVE,
-        switch_out_curve=CONTENT_FADE_CURVE,
-        transition=ft.AnimatedSwitcherTransition.FADE,
         expand=True,
     )
 

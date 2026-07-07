@@ -23,6 +23,7 @@ from scan_backup_manager.models import (
     DirectoryLevel,
     Personnel,
     Project,
+    ProjectSettings,
     ProjectTask,
 )
 from scan_backup_manager.reports import ReportService
@@ -124,20 +125,51 @@ def create_mock_files() -> dict[str, Path]:
         "PROJECT_BETA B-001",
         "Second demo project, used to show the multi-project list.",
     )
+    write_pdf(
+        shares / "SCAN_OLD_SHARE" / "NGUYENVANA" / "24052026" / "SCAN" / "CSDL_SOHOA_A" / "2023" / "HS" / "123" / "1.pdf",
+        "CSDL_SOHOA_A HS 123",
+        "Legacy nested workstation structure: operator/date/SCAN/project/year/category/record/file.",
+    )
+    write_pdf(
+        shares / "SCAN_OLD_SHARE" / "TRANVANB" / "25052026" / "SCAN" / "CSDL_SOHOA_A" / "2023" / "HS" / "124" / "2.pdf",
+        "CSDL_SOHOA_A HS 124",
+        "Second valid legacy file from another operator folder.",
+    )
+    write_pdf(
+        shares / "SCAN_OLD_SHARE" / "NGUYENVANA" / "24052026" / "SCAN" / "CSDL_SOHOA_A" / "2023" / "SAI_LOAI" / "125" / "3.pdf",
+        "CSDL_SOHOA_A invalid category",
+        "Legacy structure with an invalid category for display review.",
+    )
+
+    old_mapfile_path = MOCK_ROOT / "mapfiles" / "old_structure_mapfile.xlsx"
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.title = "Mapfile"
+    sheet.append(["project", "year", "case_type", "case_number", "file_name", "owner", "note"])
+    sheet.append(["CSDL_SOHOA_A", "2023", "HS", "123", "1.pdf", "Nguyễn Văn A", "Cấu trúc cũ hợp lệ"])
+    sheet.append(["CSDL_SOHOA_A", "2023", "HS", "124", "2.pdf", "Trần Văn B", "Cấu trúc cũ hợp lệ"])
+    sheet.append(["CSDL_SOHOA_A", "2023", "HS", "999", "missing.pdf", "Tổ rà soát", "Có trong mapfile nhưng chưa có file"])
+    workbook.save(old_mapfile_path)
 
     return {
         "scan01": shares / "SCAN01_SHARE",
         "scan02": shares / "SCAN02_SHARE",
         "scan04": shares / "SCAN04_SHARE",
+        "scan_old": shares / "SCAN_OLD_SHARE",
         "backup_root": backup_root,
         "backup_root_beta": MOCK_ROOT / "backup_beta",
+        "backup_root_old": MOCK_ROOT / "backup_old_structure",
         "staging": MOCK_ROOT / "staging",
         "staging_beta": MOCK_ROOT / "staging_beta",
+        "staging_old": MOCK_ROOT / "staging_old_structure",
         "conflict_archive": MOCK_ROOT / "conflict_archive",
         "conflict_archive_beta": MOCK_ROOT / "conflict_archive_beta",
+        "conflict_archive_old": MOCK_ROOT / "conflict_archive_old_structure",
         "reports": MOCK_ROOT / "reports",
         "reports_beta": MOCK_ROOT / "reports_beta",
+        "reports_old": MOCK_ROOT / "reports_old_structure",
         "mapfile": mapfile_path,
+        "mapfile_old": old_mapfile_path,
     }
 
 
@@ -216,12 +248,69 @@ def seed_database(paths: dict[str, Path]) -> None:
     db.save_client(Client(None, beta_id, "SCAN04", "", str(paths["scan04"]), True, "Demo workstation for Project Beta"))
     beta_result = BackupManager(db).run_all_enabled(beta_id)
 
+    # Legacy project shape used by older scan workstations:
+    # operator/date/SCAN/CSDL_SOHOA_A/2023/HS/123/1.pdf
+    old_id = db.create_project(
+        Project(
+            None,
+            "CSDL_SOHOA_A",
+            "Dự án mẫu - cấu trúc cũ",
+            str(paths["backup_root_old"]),
+            str(paths["staging_old"]),
+            str(paths["conflict_archive_old"]),
+            str(paths["reports_old"]),
+        )
+    )
+    old_settings = db.get_project_settings(old_id)
+    db.save_project_settings(
+        ProjectSettings(old_id, old_settings.poll_interval_seconds, 0, True)
+    )
+    db.save_directory_levels(
+        old_id,
+        [
+            DirectoryLevel(None, old_id, 1, "Năm", "YEAR4", []),
+            DirectoryLevel(None, old_id, 2, "Loại hồ sơ", "ENUM", ["HS"]),
+            DirectoryLevel(None, old_id, 3, "Mã hồ sơ", "TEXT", []),
+        ],
+    )
+    db.save_client(
+        Client(
+            None,
+            old_id,
+            "SCAN_OLD",
+            "",
+            str(paths["scan_old"]),
+            True,
+            "Máy trạm mẫu theo cấu trúc cũ: nhân sự/ngày/SCAN/mã dự án",
+        )
+    )
+    old_person_id = db.save_personnel(
+        Personnel(None, old_id, "NV_CU", "Nguyễn Văn A", "Nhân sự scan", True)
+    )
+    db.save_task(
+        ProjectTask(
+            None,
+            old_id,
+            "CV_CU_001",
+            "Rà soát hiển thị cấu trúc cũ",
+            "Kiểm tra cây thư mục legacy và mapfile tương ứng",
+            old_person_id,
+            "2026-12-31",
+            "NORMAL",
+            "NEW",
+        )
+    )
+    old_result = BackupManager(db).run_all_enabled(old_id)
+    old_import_id = MapfileService(db).import_excel(old_id, paths["mapfile_old"])
+
     print("Mock data is ready.")
     print(f"Database: {DB_PATH}")
     print(f"Mock root: {MOCK_ROOT}")
     print(f"Mapfile import ID: {import_id}")
+    print(f"Old-structure mapfile import ID: {old_import_id}")
     print(f"Backup result (Alpha): {backup_result}")
     print(f"Backup result (Beta): {beta_result}")
+    print(f"Backup result (Old structure): {old_result}")
     print(f"Hash verified count: {verified}")
     print(f"Report: {report_path}")
 
