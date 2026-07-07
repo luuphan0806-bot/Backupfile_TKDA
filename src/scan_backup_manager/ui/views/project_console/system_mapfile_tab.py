@@ -96,6 +96,7 @@ def build(ctx) -> ft.Control:
             "scan_date": workflow.get("scan_date", ""),
             "checker_id": workflow.get("checker_id"),
             "check_date": workflow.get("check_date", ""),
+            "check_pages": workflow.get("check_pages", 0),
             "record_status": workflow.get("record_status", "NOT_STARTED"),
             "notes": workflow.get("notes", ""),
             "paper_statuses": [
@@ -120,6 +121,7 @@ def build(ctx) -> ft.Control:
                 scan_date=values["scan_date"],
                 checker_id=values["checker_id"],
                 check_date=values["check_date"],
+                check_pages=values["check_pages"],
                 record_status=values["record_status"],
                 notes=values["notes"],
                 paper_statuses=values["paper_statuses"],
@@ -344,6 +346,7 @@ def build(ctx) -> ft.Control:
             "scan_date": workflow.get("scan_date", ""),
             "checker_id": workflow.get("checker_id"),
             "check_date": workflow.get("check_date", ""),
+            "check_pages": workflow.get("check_pages", 0),
             "record_status": workflow.get("record_status", "NOT_STARTED"),
             "notes": workflow.get("notes", ""),
             "paper_statuses": [
@@ -368,6 +371,7 @@ def build(ctx) -> ft.Control:
             scan_date=payload["scan_date"],
             checker_id=payload["checker_id"],
             check_date=payload["check_date"],
+            check_pages=payload["check_pages"],
             record_status=payload["record_status"],
             notes=payload["notes"],
             paper_statuses=payload["paper_statuses"],
@@ -632,46 +636,74 @@ def build(ctx) -> ft.Control:
             )
         )
 
-    def paper_check_pages_cell(record: dict, paper_format) -> ft.DataCell:
-        current = dict(record["paper_statuses"].get(paper_format.code) or {})
-        saved = {"check_pages": str(current.get("check_pages", 0) or 0)}
+    def check_cell(record: dict) -> ft.DataCell:
+        saved = {
+            "checker_id": str(record.get("checker_id") or ""),
+            "check_pages": str(record.get("check_pages", 0) or 0),
+        }
+        checker = ft.Dropdown(
+            dense=True,
+            width=150,
+            value=saved["checker_id"],
+            label="Người Check",
+            options=[
+                ft.dropdown.Option(key="", text="--"),
+                *[
+                    ft.dropdown.Option(key=str(person.id), text=f"{person.personnel_code} - {person.full_name}")
+                    for person in personnel
+                    if person.id is not None
+                ],
+            ],
+        )
         pages = ft.TextField(
             value=saved["check_pages"],
             dense=True,
-            width=82,
-            label="Trang",
+            width=92,
+            label="Số Trang",
             keyboard_type=ft.KeyboardType.NUMBER,
             content_padding=ft.Padding.symmetric(vertical=6, horizontal=8),
         )
 
         def commit(_event=None) -> None:
-            next_value = pages.value or "0"
-            if next_value == saved["check_pages"]:
+            next_values = {
+                "checker_id": checker.value or "",
+                "check_pages": pages.value or "0",
+            }
+            if next_values == saved:
                 return
 
             def mutate(values: dict) -> None:
-                for item in values["paper_statuses"]:
-                    if int(item["paper_format_id"]) == int(paper_format.id):
-                        item["check_pages"] = next_value
-                        return
+                values["checker_id"] = optional_personnel_id(next_values["checker_id"])
+                values["check_pages"] = next_values["check_pages"]
 
             ok = save_inline(
                 record,
                 mutate,
-                message=f"Đã lưu Check {paper_format.code} cho {record['record_key']}.",
+                message=f"Đã lưu Check hồ sơ {record['record_key']}.",
             )
             if ok:
-                saved["check_pages"] = next_value
+                saved.update(next_values)
             else:
+                checker.value = saved["checker_id"]
                 pages.value = saved["check_pages"]
 
         return ft.DataCell(
-            ft.Row(
-                spacing=4,
-                controls=[
-                    pages,
-                    ft.IconButton(icon=ft.Icons.SAVE, tooltip=f"Lưu Check {paper_format.code}", on_click=commit),
-                ],
+            ft.Container(
+                width=170,
+                padding=ft.Padding.symmetric(vertical=4, horizontal=0),
+                content=ft.Column(
+                    spacing=4,
+                    controls=[
+                        checker,
+                        ft.Row(
+                            spacing=4,
+                            controls=[
+                                pages,
+                                ft.IconButton(icon=ft.Icons.SAVE, tooltip="Lưu Check hồ sơ", on_click=commit),
+                            ],
+                        ),
+                    ],
+                ),
             )
         )
 
@@ -688,11 +720,7 @@ def build(ctx) -> ft.Control:
                 ft.DataColumn(ft.Text(f"Scan {paper_format.code}"))
                 for paper_format in paper_formats
             ],
-            ft.DataColumn(ft.Text("Người Check")),
-            *[
-                ft.DataColumn(ft.Text(f"Check {paper_format.code}"))
-                for paper_format in paper_formats
-            ],
+            ft.DataColumn(ft.Text("Check hồ sơ")),
             ft.DataColumn(ft.Text("Trạng thái hồ sơ")),
             ft.DataColumn(ft.Text("Tình trạng backup")),
             ft.DataColumn(ft.Text("Máy đang lưu")),
@@ -728,11 +756,7 @@ def build(ctx) -> ft.Control:
                     paper_scan_cell(record, paper_format)
                     for paper_format in paper_formats
                 ],
-                personnel_cell(record, "checker_id", record["checker_id"]),
-                *[
-                    paper_check_pages_cell(record, paper_format)
-                    for paper_format in paper_formats
-                ],
+                check_cell(record),
                 record_status_cell(record),
                 ft.DataCell(
                     _badge(

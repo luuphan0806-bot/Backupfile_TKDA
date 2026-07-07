@@ -291,6 +291,7 @@ class MapfileService:
                 scan_date=workflow.get("scan_date", ""),
                 checker_id=workflow.get("checker_id"),
                 check_date=workflow.get("check_date", ""),
+                check_pages=workflow.get("check_pages", 0),
                 record_status=workflow.get("record_status", "NOT_STARTED"),
                 notes=workflow.get("notes", ""),
                 paper_statuses=[

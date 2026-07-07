@@ -294,6 +294,7 @@ class Database:
                 scan_date TEXT NOT NULL DEFAULT '',
                 checker_id INTEGER,
                 check_date TEXT NOT NULL DEFAULT '',
+                check_pages INTEGER NOT NULL DEFAULT 0,
                 record_status TEXT NOT NULL DEFAULT 'NOT_STARTED',
                 notes TEXT NOT NULL DEFAULT '',
                 created_at TEXT NOT NULL,
@@ -637,6 +638,11 @@ class Database:
             conn.execute("ALTER TABLE record_paper_statuses ADD COLUMN scanner_id INTEGER")
         if "scan_date" not in paper_columns:
             conn.execute("ALTER TABLE record_paper_statuses ADD COLUMN scan_date TEXT NOT NULL DEFAULT ''")
+        workflow_columns = {
+            row[1] for row in conn.execute("PRAGMA table_info(record_workflows)").fetchall()
+        }
+        if "check_pages" not in workflow_columns:
+            conn.execute("ALTER TABLE record_workflows ADD COLUMN check_pages INTEGER NOT NULL DEFAULT 0")
         self._seed_paper_formats(conn)
 
     @staticmethod
@@ -1491,6 +1497,7 @@ class Database:
                     rw.checker_id,
                     checker.full_name AS checker_name,
                     rw.check_date,
+                    COALESCE(rw.check_pages, 0) AS check_pages,
                     COALESCE(rw.record_status, 'NOT_STARTED') AS record_status,
                     COALESCE(rw.notes, '') AS workflow_notes,
                     COALESCE(bs.backup_status, 'NOT_BACKED_UP') AS backup_status
@@ -1569,6 +1576,7 @@ class Database:
                     "scan_date": "",
                     "checker_id": None,
                     "check_date": "",
+                    "check_pages": 0,
                     "record_status": "NOT_STARTED",
                     "notes": "",
                 }
@@ -1604,6 +1612,7 @@ class Database:
         scan_date: str,
         checker_id: int | None,
         check_date: str,
+        check_pages: int | str = 0,
         record_status: str,
         notes: str,
         paper_statuses: list[dict[str, Any]],
@@ -1620,6 +1629,12 @@ class Database:
                 datetime.strptime(value.strip(), "%Y-%m-%d")
             except ValueError as exc:
                 raise ValueError(f"{label} phải có định dạng YYYY-MM-DD.") from exc
+        try:
+            normalized_check_pages = int(check_pages or 0)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("Số trang check phải là số nguyên.") from exc
+        if normalized_check_pages < 0:
+            raise ValueError("Số trang check không được âm.")
         format_ids = {int(item["paper_format_id"]) for item in paper_statuses}
         with self.connect() as conn:
             valid_formats = {
@@ -1650,9 +1665,9 @@ class Database:
                     scan_pages = int(item.get("scan_pages") or 0)
                     check_pages = int(item.get("check_pages") or 0)
                 except (TypeError, ValueError) as exc:
-                    raise ValueError("Số trang scan/check phải là số nguyên.") from exc
+                    raise ValueError("Số trang scan phải là số nguyên.") from exc
                 if scan_pages < 0 or check_pages < 0:
-                    raise ValueError("Số trang scan/check không được âm.")
+                    raise ValueError("Số trang scan không được âm.")
                 if paper_scan_date:
                     try:
                         datetime.strptime(paper_scan_date, "%Y-%m-%d")
@@ -1662,19 +1677,13 @@ class Database:
                         ) from exc
                 if scan_pages > 0 and not paper_scan_date:
                     raise ValueError(f"{valid_formats[format_id]} đã có số trang nhưng chưa nhập Ngày Scan.")
-                if scan_status in {"UNKNOWN", "NOT_PRESENT"} and (
-                    scan_pages or check_pages
-                ):
+                if scan_status in {"UNKNOWN", "NOT_PRESENT"} and scan_pages:
                     raise ValueError(
                         f"{valid_formats[format_id]} chưa có dữ liệu nhưng số trang khác 0."
                     )
                 if scan_status in {"SCANNED", "CHECKED"} and scan_pages == 0:
                     raise ValueError(
                         f"{valid_formats[format_id]} đã scan nhưng chưa nhập số trang Scan."
-                    )
-                if scan_status == "CHECKED" and check_pages == 0:
-                    raise ValueError(
-                        f"{valid_formats[format_id]} đã check nhưng chưa nhập số trang Check."
                     )
                 statuses_by_code[valid_formats[format_id]] = scan_status
                 normalized_papers.append(
@@ -1708,13 +1717,14 @@ class Database:
                 """
                 INSERT INTO record_workflows(
                     project_id, record_key, scanner_id, scan_date, checker_id,
-                    check_date, record_status, notes, created_at, updated_at
-                ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    check_date, check_pages, record_status, notes, created_at, updated_at
+                ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(project_id, record_key) DO UPDATE SET
                     scanner_id=excluded.scanner_id,
                     scan_date=excluded.scan_date,
                     checker_id=excluded.checker_id,
                     check_date=excluded.check_date,
+                    check_pages=excluded.check_pages,
                     record_status=excluded.record_status,
                     notes=excluded.notes,
                     updated_at=excluded.updated_at
@@ -1726,6 +1736,7 @@ class Database:
                     scan_date.strip(),
                     checker_id,
                     check_date.strip(),
+                    normalized_check_pages,
                     record_status,
                     notes.strip(),
                     now,

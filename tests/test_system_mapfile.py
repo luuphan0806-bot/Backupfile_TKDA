@@ -111,7 +111,7 @@ def test_record_workflow_tracks_paper_sizes_and_requires_a3_confirmation(
             "scan_date": "2026-07-06",
             "scan_status": "SCANNED",
             "scan_pages": 12,
-            "check_pages": 12,
+            "check_pages": 0,
             "notes": "",
         },
         {
@@ -140,6 +140,7 @@ def test_record_workflow_tracks_paper_sizes_and_requires_a3_confirmation(
         scan_date="2026-07-06",
         checker_id=checker_id,
         check_date="2026-07-07",
+        check_pages=12,
         record_status="COMPLETED",
         notes="Đã đối chiếu",
         paper_statuses=paper_statuses,
@@ -148,6 +149,8 @@ def test_record_workflow_tracks_paper_sizes_and_requires_a3_confirmation(
     records, total = db.list_system_records_page(project_id)
     assert total == 1
     assert records[0]["scanner_name"] == "Người Scan"
+    assert records[0]["checker_name"] == "Người Check"
+    assert records[0]["check_pages"] == 12
     assert records[0]["backup_status"] == "BACKED_UP"
     assert records[0]["paper_statuses"]["A4"]["scan_pages"] == 12
     assert records[0]["paper_statuses"]["A4"]["scanner_id"] == scanner_id
