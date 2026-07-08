@@ -6,7 +6,8 @@ from pathlib import Path
 
 import flet as ft
 
-from ...theme import DANGER, SUCCESS, WARNING, status_label
+from ... import kit
+from ...theme import DANGER, SUCCESS, WARNING, TEXT_MUTED, status_label
 from ...workers import run_worker
 
 FILTER_ALL = "all"
@@ -198,27 +199,26 @@ def build(ctx) -> ft.Control:
 
     table = ft.DataTable(columns=columns, rows=data_rows)
 
-    def filter_button(label: str, value: str) -> ft.Control:
-        selected = active_filter["value"] == value
+    filter_defs = [
+        ("Tất cả", FILTER_ALL),
+        ("Chưa quét xong", FILTER_NOT_DONE),
+        ("Đã quét xong", FILTER_DONE_PENDING),
+        ("Đã khớp", FILTER_MATCHED),
+        ("Thiếu", FILTER_MISSING),
+    ]
+    filter_values = [value for _label, value in filter_defs]
+    try:
+        filter_index = filter_values.index(active_filter["value"])
+    except ValueError:
+        filter_index = 0
 
-        def on_click(_e) -> None:
-            active_filter["value"] = value
-            state["filter"] = value
-            state["page"] = 0
-            ctx.refresh()
+    def select_filter(index: int) -> None:
+        active_filter["value"] = filter_values[index]
+        state["filter"] = filter_values[index]
+        state["page"] = 0
+        ctx.refresh()
 
-        return (ft.FilledButton if selected else ft.OutlinedButton)(label, on_click=on_click)
-
-    filter_bar = ft.Row(
-        spacing=8, wrap=True,
-        controls=[
-            filter_button("Tất cả", FILTER_ALL),
-            filter_button("Chưa quét xong", FILTER_NOT_DONE),
-            filter_button("Đã quét xong", FILTER_DONE_PENDING),
-            filter_button("Đã khớp", FILTER_MATCHED),
-            filter_button("Thiếu", FILTER_MISSING),
-        ],
-    )
+    filter_bar = kit.tab_bar([label for label, _v in filter_defs], filter_index, select_filter)
 
     search_generation = {"value": 0}
 
@@ -242,29 +242,35 @@ def build(ctx) -> ft.Control:
 
     search_field.on_change = on_search
 
-    toolbar = ft.Row(
-        spacing=10,
-        controls=[
-            ft.FilledButton("Nhập danh mục Excel", icon=ft.Icons.UPLOAD_FILE, on_click=do_import),
-            search_field,
-            status_banner,
-        ],
+    toolbar = kit.card(
+        ft.Row(
+            spacing=10,
+            wrap=True,
+            vertical_alignment=ft.CrossAxisAlignment.CENTER,
+            controls=[
+                kit.primary_button("Nhập danh mục Excel", icon=ft.Icons.UPLOAD_FILE, on_click=do_import),
+                search_field,
+                status_banner,
+            ],
+        ),
+        padding=14,
     )
 
     if not rows:
         body: ft.Control = ft.Text(
             "Chưa có mapfile nào được nhập cho dự án này. Bấm \"Nhập mapfile\" để bắt đầu.",
-            color=ft.Colors.ON_SURFACE_VARIANT,
+            color=TEXT_MUTED,
         )
     else:
         body = ft.Column(
             expand=True, scroll=ft.ScrollMode.AUTO,
+            spacing=12,
             controls=[
                 filter_bar,
                 ft.Row(controls=[
                     ft.Text(
                         f"Trang {int(state['page']) + 1} · {total_rows} hồ sơ",
-                        size=12, color=ft.Colors.ON_SURFACE_VARIANT,
+                        size=12, color=TEXT_MUTED,
                     ),
                     ft.IconButton(
                         icon=ft.Icons.CHEVRON_LEFT,
@@ -283,7 +289,7 @@ def build(ctx) -> ft.Control:
                         ),
                     ),
                 ]),
-                table,
+                kit.table_frame(table),
             ],
         )
 
@@ -294,7 +300,7 @@ def build(ctx) -> ft.Control:
             ft.Text(
                 "Đối chiếu danh sách hồ sơ trong file Excel với dữ liệu đã backup thực tế. "
                 "Nhân sự xác nhận \"Đã quét xong\" để theo dõi tiến độ. Dịch vụ tự động sao lưu theo lịch.",
-                size=13, color=ft.Colors.ON_SURFACE_VARIANT,
+                size=13, color=TEXT_MUTED,
             ),
             toolbar,
             body,

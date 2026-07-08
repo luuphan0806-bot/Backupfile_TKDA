@@ -14,52 +14,10 @@ from ....models import (
     Project,
     ProjectSettings,
 )
-from ...theme import LEVEL_LABELS
+from ... import kit
+from ...theme import LEVEL_LABELS, TEXT_MUTED
 
 LEVEL_TYPES = ["YEAR4", "ENUM", "INTEGER", "TEXT"]
-
-
-def _section(title: str, subtitle: str, content: ft.Control) -> ft.Control:
-    return ft.Container(
-        padding=20,
-        border_radius=14,
-        bgcolor=ft.Colors.SURFACE,
-        border=ft.Border.all(
-            1.4, ft.Colors.with_opacity(0.42, ft.Colors.PRIMARY)
-        ),
-        shadow=ft.BoxShadow(
-            blur_radius=14,
-            spread_radius=0,
-            color=ft.Colors.with_opacity(0.22, ft.Colors.BLACK),
-            offset=ft.Offset(0, 4),
-        ),
-        content=ft.Column(
-            spacing=14,
-            controls=[
-                ft.Row(
-                    spacing=10,
-                    controls=[
-                        ft.Container(
-                            width=4, height=38, border_radius=4,
-                            bgcolor=ft.Colors.PRIMARY,
-                        ),
-                        ft.Column(
-                            spacing=2,
-                            controls=[
-                                ft.Text(title, size=16, weight=ft.FontWeight.BOLD),
-                                ft.Text(
-                                    subtitle, size=12,
-                                    color=ft.Colors.ON_SURFACE_VARIANT,
-                                ),
-                            ],
-                        ),
-                    ],
-                ),
-                ft.Divider(height=1, color=ft.Colors.with_opacity(0.24, ft.Colors.PRIMARY)),
-                content,
-            ],
-        ),
-    )
 
 
 def _build_project_section(ctx) -> ft.Control:
@@ -147,7 +105,7 @@ def _build_project_section(ctx) -> ft.Control:
     return ft.Column(
         spacing=16,
         controls=[
-            _section(
+            kit.section(
                 "Thông tin dự án", "Mã dự án, tên hiển thị và các thư mục lưu trữ.",
                 ft.Column(
                     spacing=10,
@@ -160,14 +118,14 @@ def _build_project_section(ctx) -> ft.Control:
                     ],
                 ),
             ),
-            _section(
+            kit.section(
                 "Cây thư mục chuẩn", "Thứ tự các tầng thư mục bắt buộc bên dưới mã dự án.",
                 ft.Column(
                     spacing=10,
                     controls=[
                         ft.Row(controls=[level_name_field, level_type_dropdown, level_values_field, ft.FilledButton("Thêm tầng", on_click=add_level)], wrap=True),
                         levels_error,
-                        levels_table,
+                        kit.table_frame(levels_table),
                         ft.FilledButton("Lưu cây thư mục", on_click=save_levels),
                     ],
                 ),
@@ -202,7 +160,7 @@ def _build_mapfile_section(ctx) -> ft.Control:
         status_text.value = "Đã lưu ánh xạ mapfile."
         ctx.page.update()
 
-    return _section(
+    return kit.section(
         "Ánh xạ danh mục hồ sơ", "Khai báo trang tính và tên cột Excel tương ứng.",
         ft.Column(
             spacing=10,
@@ -265,14 +223,14 @@ def _build_paper_formats_section(ctx) -> ft.Control:
         ],
     )
 
-    return _section(
+    return kit.section(
         "Danh mục khổ giấy",
         "Cố định ba khổ giấy A4, A3, A0. Tích chọn khổ xuất hiện trong dự án; Mapfile hệ thống chỉ hiển thị các khổ đang áp dụng.",
         ft.Column(
             spacing=10,
             controls=[
                 status_text,
-                table,
+                kit.table_frame(table),
             ],
         ),
     )
@@ -358,7 +316,7 @@ def _build_clients_section(ctx) -> ft.Control:
         ],
     )
 
-    return _section(
+    return kit.section(
         "Máy trạm", "Khai báo các thư mục chia sẻ trên máy trạm cần quét tệp.",
         ft.Column(
             spacing=10,
@@ -374,7 +332,7 @@ def _build_clients_section(ctx) -> ft.Control:
                         ft.OutlinedButton("Xuất Excel", icon=ft.Icons.DOWNLOAD, on_click=export_excel),
                     ],
                 ),
-                table,
+                kit.table_frame(table),
             ],
         ),
     )
@@ -468,7 +426,7 @@ def _build_personnel_section(ctx) -> ft.Control:
         ],
     )
 
-    return _section(
+    return kit.section(
         "Nhân sự", "Quản lý danh sách nhân sự có thể được giao công việc dự án.",
         ft.Column(
             spacing=10,
@@ -484,7 +442,7 @@ def _build_personnel_section(ctx) -> ft.Control:
                         ft.OutlinedButton("Xuất Excel", icon=ft.Icons.DOWNLOAD, on_click=export_excel),
                     ],
                 ),
-                table,
+                kit.table_frame(table),
             ],
         ),
     )
@@ -511,7 +469,7 @@ def _build_operations_section(ctx) -> ft.Control:
         error_text.color = ft.Colors.PRIMARY
         ctx.page.update()
 
-    return _section(
+    return kit.section(
         "Vận hành tự động", "Chu kỳ quét tự động và quy tắc kiểm tra tệp áp dụng riêng cho dự án.",
         ft.Column(
             spacing=10,
@@ -540,26 +498,12 @@ def build(ctx) -> ft.Control:
         state["tab"] = index
         ctx.refresh()
 
-    tab_buttons: list[ft.Control] = []
-    for index, (label, icon, _builder) in enumerate(tab_items):
-        button_type = ft.FilledButton if index == state["tab"] else ft.OutlinedButton
-        tab_buttons.append(
-            button_type(
-                label,
-                icon=icon,
-                on_click=lambda _event, selected=index: switch_tab(selected),
-            )
-        )
-
-    selected_builder = tab_items[int(state["tab"])][2]
-    tab_bar = ft.Container(
-        padding=10,
-        border_radius=12,
-        bgcolor=ft.Colors.with_opacity(0.06, ft.Colors.PRIMARY),
-        border=ft.Border.all(
-            1, ft.Colors.with_opacity(0.25, ft.Colors.PRIMARY)
-        ),
-        content=ft.Row(spacing=8, wrap=True, controls=tab_buttons),
+    selected_index = int(state["tab"])
+    selected_builder = tab_items[selected_index][2]
+    tab_bar = kit.tab_bar(
+        [(label, icon) for label, icon, _b in tab_items],
+        selected_index,
+        switch_tab,
     )
 
     return ft.Column(
@@ -569,7 +513,7 @@ def build(ctx) -> ft.Control:
         controls=[
             ft.Text(
                 "Chọn từng nhóm bên dưới để cấu hình dự án.",
-                size=13, color=ft.Colors.ON_SURFACE_VARIANT,
+                size=13, color=TEXT_MUTED,
             ),
             tab_bar,
             selected_builder(ctx),

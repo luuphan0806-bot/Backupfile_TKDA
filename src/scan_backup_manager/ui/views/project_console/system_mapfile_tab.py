@@ -1,27 +1,25 @@
 from __future__ import annotations
 
 import os
-from datetime import date, datetime
 from pathlib import Path
 
 import flet as ft
 
-from ...theme import DANGER, INFO, SUCCESS, WARNING
+from ... import kit
+from ...theme import DANGER, INFO, LINE, SUCCESS, WARNING, TEXT_MUTED
 
 
 PAGE_SIZE = 50
 PAPER_CELL_WIDTH = 178
-PAPER_TABLE_ROW_HEIGHT = 156
-PAPER_FIELD_HEIGHT = 38
+# Each Scan/Check cell stacks up to three labelled Material fields. A field
+# with a floating label needs ~48-52px of height or the label collides with
+# its value (the "chồng chéo" seen in the A4/A3/A0 columns). The row height
+# must in turn fit three such fields plus spacing so nothing clips into the
+# next row: 3*52 + 2*6 spacing + 2*6 container padding = 180, rounded up.
+PAPER_FIELD_HEIGHT = 52
+PAPER_TABLE_ROW_HEIGHT = 210
+PAPER_SAVE_BUTTON_SIZE = PAPER_FIELD_HEIGHT
 
-PAPER_STATUS_LABELS = {
-    "UNKNOWN": "Chưa xác định",
-    "NOT_PRESENT": "Không có",
-    "PENDING_SCAN": "Có - Chưa scan",
-    "SCANNED": "Đã scan",
-    "CHECKED": "Đã check",
-    "RESCAN_REQUIRED": "Cần scan lại",
-}
 RECORD_STATUS_LABELS = {
     "NOT_STARTED": "Chưa thực hiện",
     "SCANNING": "Đang scan",
@@ -44,15 +42,6 @@ BACKUP_STATUS_COLORS = {
     "CONFLICT": WARNING,
     "ERROR": DANGER,
 }
-
-
-def _badge(label: str, color: str) -> ft.Control:
-    return ft.Container(
-        padding=ft.Padding.symmetric(vertical=3, horizontal=8),
-        border_radius=999,
-        bgcolor=ft.Colors.with_opacity(0.15, color),
-        content=ft.Text(label, size=11, color=color, weight=ft.FontWeight.BOLD),
-    )
 
 
 def build(ctx) -> ft.Control:
@@ -134,98 +123,17 @@ def build(ctx) -> ft.Control:
             status_banner.color = ft.Colors.ERROR
             ctx.page.update()
             return False
+        # Update the flash message in place instead of ctx.refresh(): a full
+        # refresh re-queries the page of records and rebuilds every row's
+        # dropdowns from scratch, which made every single-cell save feel like
+        # it was reloading the whole table. The edited control already shows
+        # its new value (the user just set it), so only the status banner
+        # needs to change.
         state["flash"] = message
-        ctx.refresh()
+        status_banner.value = message
+        status_banner.color = ft.Colors.PRIMARY
+        ctx.page.update()
         return True
-
-    def personnel_cell(record: dict, field_name: str, selected_id: int | None) -> ft.DataCell:
-        control = ft.Dropdown(
-            dense=True,
-            width=190,
-            value=str(selected_id) if selected_id else "",
-            options=[
-                ft.dropdown.Option(key="", text="--"),
-                *[
-                    ft.dropdown.Option(
-                        key=str(person.id),
-                        text=f"{person.personnel_code} - {person.full_name}",
-                    )
-                    for person in personnel
-                    if person.id is not None
-                ],
-            ],
-        )
-        control.on_change = lambda event: save_inline(
-            record,
-            lambda values: values.__setitem__(
-                field_name, optional_personnel_id(event.control.value)
-            ),
-            message=f"Đã lưu {record['record_key']}.",
-        )
-        return ft.DataCell(control)
-
-    def date_cell(record: dict, field_name: str, value: str) -> ft.DataCell:
-        saved_value = {"value": value or ""}
-        display = ft.TextField(
-            value=saved_value["value"],
-            dense=True,
-            width=118,
-            read_only=True,
-            hint_text="YYYY-MM-DD",
-            content_padding=ft.Padding.symmetric(vertical=6, horizontal=8),
-        )
-
-        def initial_date() -> date:
-            try:
-                return datetime.strptime(saved_value["value"], "%Y-%m-%d").date()
-            except ValueError:
-                return date.today()
-
-        def commit(selected: str) -> None:
-            if selected == saved_value["value"]:
-                return
-            saved = save_inline(
-                record,
-                lambda values: values.__setitem__(field_name, selected),
-                message=f"Đã lưu {record['record_key']}.",
-            )
-            if saved:
-                saved_value["value"] = selected
-                display.value = selected
-
-        def open_picker(_event) -> None:
-            def on_change(event) -> None:
-                selected = event.control.value
-                if isinstance(selected, datetime):
-                    commit(selected.date().isoformat())
-                elif isinstance(selected, date):
-                    commit(selected.isoformat())
-
-            ctx.page.show_dialog(
-                ft.DatePicker(
-                    value=initial_date(),
-                    first_date=date(2000, 1, 1),
-                    last_date=date(2100, 12, 31),
-                    help_text="Chọn ngày",
-                    cancel_text="Hủy",
-                    confirm_text="Chọn",
-                    on_change=on_change,
-                )
-            )
-
-        return ft.DataCell(
-            ft.Row(
-                spacing=2,
-                controls=[
-                    display,
-                    ft.IconButton(
-                        icon=ft.Icons.CALENDAR_MONTH,
-                        tooltip="Chọn ngày",
-                        on_click=open_picker,
-                    ),
-                ],
-            )
-        )
 
     def record_status_cell(record: dict) -> ft.DataCell:
         control = ft.Dropdown(
@@ -245,72 +153,6 @@ def build(ctx) -> ft.Control:
             message=f"Đã lưu trạng thái {record['record_key']}.",
         )
         return ft.DataCell(control)
-
-    def paper_inline_cell(record: dict, paper_format) -> ft.DataCell:
-        current = dict(record["paper_statuses"].get(paper_format.code) or {})
-        saved = {
-            "scan_status": current.get("scan_status", "UNKNOWN"),
-            "quantity": str(current.get("scan_pages", 0) or current.get("check_pages", 0) or 0),
-        }
-        status = ft.Dropdown(
-            dense=True,
-            width=150,
-            value=saved["scan_status"],
-            options=[
-                ft.dropdown.Option(key=key, text=label)
-                for key, label in PAPER_STATUS_LABELS.items()
-            ],
-        )
-        quantity = ft.TextField(
-            value=saved["quantity"],
-            dense=True,
-            width=76,
-            label="SL",
-            keyboard_type=ft.KeyboardType.NUMBER,
-            content_padding=ft.Padding.symmetric(vertical=6, horizontal=8),
-        )
-
-        def commit(_event=None) -> None:
-            next_values = {
-                "scan_status": status.value or "UNKNOWN",
-                "quantity": quantity.value or "0",
-            }
-            if next_values == saved:
-                return
-
-            def mutate(values: dict) -> None:
-                for item in values["paper_statuses"]:
-                    if int(item["paper_format_id"]) == int(paper_format.id):
-                        item["scan_status"] = next_values["scan_status"]
-                        item["scan_pages"] = next_values["quantity"]
-                        item["check_pages"] = next_values["quantity"]
-                        return
-
-            ok = save_inline(
-                record,
-                mutate,
-                message=f"Đã lưu {paper_format.code} cho {record['record_key']}.",
-            )
-            if ok:
-                saved.update(next_values)
-            else:
-                status.value = saved["scan_status"]
-                quantity.value = saved["quantity"]
-
-        return ft.DataCell(
-            ft.Row(
-                spacing=6,
-                controls=[
-                    status,
-                    quantity,
-                    ft.IconButton(
-                        icon=ft.Icons.SAVE,
-                        tooltip="Lưu khổ giấy",
-                        on_click=commit,
-                    ),
-                ],
-            )
-        )
 
     def open_folder(record: dict) -> None:
         try:
@@ -523,7 +365,7 @@ def build(ctx) -> ft.Control:
 
         return ft.Container(
             padding=12,
-            border=ft.Border.all(1, ft.Colors.OUTLINE_VARIANT),
+            border=ft.Border.all(1, LINE),
             border_radius=8,
             content=ft.Row(
                 wrap=True,
@@ -634,6 +476,10 @@ def build(ctx) -> ft.Control:
                                 pages,
                                 ft.IconButton(
                                     icon=ft.Icons.SAVE,
+                                    icon_size=18,
+                                    width=PAPER_SAVE_BUTTON_SIZE,
+                                    height=PAPER_SAVE_BUTTON_SIZE,
+                                    padding=0,
                                     tooltip=f"Lưu Scan {paper_format.code}",
                                     on_click=commit,
                                 ),
@@ -713,7 +559,15 @@ def build(ctx) -> ft.Control:
                             spacing=4,
                             controls=[
                                 pages,
-                                ft.IconButton(icon=ft.Icons.SAVE, tooltip="Lưu Check hồ sơ", on_click=commit),
+                                ft.IconButton(
+                                    icon=ft.Icons.SAVE,
+                                    icon_size=18,
+                                    width=PAPER_SAVE_BUTTON_SIZE,
+                                    height=PAPER_SAVE_BUTTON_SIZE,
+                                    padding=0,
+                                    tooltip="Lưu Check hồ sơ",
+                                    on_click=commit,
+                                ),
                             ],
                         ),
                     ],
@@ -773,7 +627,7 @@ def build(ctx) -> ft.Control:
                 check_cell(record),
                 record_status_cell(record),
                 ft.DataCell(
-                    _badge(
+                    kit.badge(
                         BACKUP_STATUS_LABELS.get(
                             record["backup_status"], record["backup_status"]
                         ),
@@ -822,9 +676,11 @@ def build(ctx) -> ft.Control:
         column_spacing=12,
         horizontal_margin=8,
     )
-    toolbar = ft.Row(
+    kit.style_table(table)
+    toolbar = kit.card(ft.Row(
         spacing=8,
         wrap=True,
+        vertical_alignment=ft.CrossAxisAlignment.CENTER,
         controls=[
             ft.FilledButton(
                 "Thêm dòng",
@@ -864,7 +720,7 @@ def build(ctx) -> ft.Control:
             ),
             status_banner,
         ],
-    )
+    ), padding=12)
 
     add_panel = build_add_panel() if state["adding"] else None
     if not records:
@@ -872,7 +728,7 @@ def build(ctx) -> ft.Control:
             "Không tìm thấy hồ sơ phù hợp."
             if state["search"]
             else "Hệ thống chưa ghi nhận hồ sơ nào cho dự án này.",
-            color=ft.Colors.ON_SURFACE_VARIANT,
+            color=TEXT_MUTED,
         )
         body: ft.Control = ft.Column(
             spacing=8,
@@ -892,7 +748,7 @@ def build(ctx) -> ft.Control:
                         ft.Text(
                             f"Hiển thị {start_row}–{end_row} trong {total_rows} hồ sơ",
                             size=12,
-                            color=ft.Colors.ON_SURFACE_VARIANT,
+                            color=TEXT_MUTED,
                         ),
                         ft.Row(
                             spacing=2,
@@ -914,11 +770,14 @@ def build(ctx) -> ft.Control:
                         ),
                     ],
                 ),
-                ft.Row(
-                    expand=True,
-                    scroll=ft.ScrollMode.AUTO,
-                    vertical_alignment=ft.CrossAxisAlignment.START,
-                    controls=[table],
+                kit.card(
+                    ft.Row(
+                        expand=True,
+                        scroll=ft.ScrollMode.AUTO,
+                        vertical_alignment=ft.CrossAxisAlignment.START,
+                        controls=[table],
+                    ),
+                    padding=6,
                 ),
             ],
         )
@@ -931,7 +790,7 @@ def build(ctx) -> ft.Control:
                 "Theo dõi hồ sơ theo các cấp thư mục cấu hình, nghiệp vụ Scan / Check, "
                 "khổ giấy và tình trạng backup tự động.",
                 size=13,
-                color=ft.Colors.ON_SURFACE_VARIANT,
+                color=TEXT_MUTED,
             ),
             toolbar,
             body,

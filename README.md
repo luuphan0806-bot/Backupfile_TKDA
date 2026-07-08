@@ -1,38 +1,38 @@
 # Scan Backup Manager
 
-Scan Backup Manager là ứng dụng desktop chạy trên Windows, dùng để sao lưu các
-file PDF scan từ thư mục chia sẻ SMB của máy trạm về cây thư mục backup chuẩn
-trên máy chủ. Ứng dụng hỗ trợ nhiều dự án cùng lúc, mỗi dự án có cấu hình máy
-trạm, nhân sự, mapfile, cây thư mục, lịch quét và báo cáo riêng.
+Ứng dụng desktop chạy trên Windows để quản lý và sao lưu file PDF scan từ các
+máy trạm hoặc thư mục chia sẻ SMB về kho lưu trữ tập trung trên máy chủ. Mỗi dự
+án có cấu hình riêng cho máy trạm, cây thư mục, mapfile, nhân sự, lịch quét,
+báo cáo và thống kê.
 
-Giao diện được xây dựng bằng Flet, dữ liệu lưu bằng SQLite, báo cáo xuất ra Excel.
+Giao diện được xây dựng bằng Flet, dữ liệu lưu trong SQLite, báo cáo và dữ liệu
+import/export dùng định dạng Excel.
 
 ## Tính năng chính
 
 - Quản lý nhiều dự án scan trong cùng một ứng dụng.
-- Khai báo máy trạm SMB/share cần quét file PDF.
+- Khai báo máy trạm hoặc share SMB cần quét file PDF.
 - Cấu hình cây thư mục bắt buộc theo từng dự án.
-- Backup file scan về thư mục đích, kiểm tra hash và khóa file sau khi sao lưu.
+- Sao lưu file scan về thư mục đích, kiểm tra hash và khóa file sau khi sao lưu.
 - Phát hiện file sai cấu trúc, file trùng và xung đột backup.
 - Import mapfile Excel để đối chiếu hồ sơ cần scan với file đã backup.
-- Theo dõi nghiệp vụ Scan / Check, người thực hiện, ngày thực hiện và số trang.
+- Theo dõi nghiệp vụ Scan/Check, người thực hiện, ngày thực hiện và số trang.
 - Xuất báo cáo Excel hằng ngày và thống kê năng suất.
 - Có Windows Service để chạy pipeline backup độc lập với giao diện.
 
-## Cấu trúc thư mục
+## Cấu trúc dự án
 
 ```text
 Backupfile_TKDA/
 ├── README.md
-├── requirements.txt
 ├── pyproject.toml
+├── requirements.txt
 ├── main.py
 ├── service_main.py
 ├── src/
 │   └── scan_backup_manager/
-│       ├── __main__.py
 │       ├── backup.py
-│       ├── constants.py
+│       ├── config_excel.py
 │       ├── db.py
 │       ├── filesystem.py
 │       ├── mapfile.py
@@ -41,131 +41,85 @@ Backupfile_TKDA/
 │       ├── statistics.py
 │       ├── windows_service.py
 │       └── ui/
+├── tests/
 ├── scripts/
 │   └── seed_mock_data.py
-├── tests/
-├── packaging/
-└── data/          # Tạo khi chạy app, không commit lên Git
+└── packaging/
 ```
 
-## Yêu cầu cài đặt
+Thư mục `data/`, `logs/`, `.venv/`, `dist/` và các file build/runtime không nên
+commit lên Git.
+
+## Yêu cầu
 
 - Windows 10/11.
 - Git.
 - Python 3.11 trở lên, khuyến nghị Python 3.12.
-- Kết nối mạng để tải thư viện Python trong lần cài đầu tiên.
+- Kết nối mạng trong lần cài dependency đầu tiên.
 
-Nếu chưa có Python, cài bằng PowerShell:
+Cài Python bằng PowerShell nếu máy chưa có:
 
 ```powershell
 winget install --id Python.Python.3.12 -e
 ```
 
-Sau khi cài Python, đóng PowerShell đang mở và mở lại cửa sổ mới.
-
-Kiểm tra Python:
+Sau khi cài, đóng PowerShell đang mở và mở cửa sổ mới rồi kiểm tra:
 
 ```powershell
 python --version
 pip --version
 ```
 
-Nếu Windows vẫn báo `Python was not found` hoặc tự mở Microsoft Store, hãy tắt
-alias Python tại:
+Nếu Windows mở Microsoft Store hoặc báo không thấy Python, tắt alias tại:
 
 ```text
 Settings > Apps > Advanced app settings > App execution aliases
 ```
 
-Tắt hai mục:
-
-```text
-python.exe
-python3.exe
-```
-
-Sau đó mở PowerShell mới và kiểm tra lại `python --version`.
+Tắt `python.exe` và `python3.exe`, sau đó mở PowerShell mới và kiểm tra lại.
 
 ## Cài đặt lần đầu
 
-Vào thư mục project:
-
 ```powershell
 cd D:\CODE\Backup\Backupfile_TKDA
-```
-
-Tạo môi trường ảo:
-
-```powershell
 python -m venv .venv
-```
-
-Kích hoạt môi trường ảo:
-
-```powershell
 .\.venv\Scripts\Activate.ps1
+python -m pip install --upgrade pip
+python -m pip install -e ".[dev,build]"
 ```
 
-Nếu PowerShell chặn file `Activate.ps1`, chạy lệnh này một lần:
+Nếu PowerShell chặn `Activate.ps1`, chạy một lần:
 
 ```powershell
 Set-ExecutionPolicy -Scope CurrentUser RemoteSigned
 ```
 
-Sau đó kích hoạt lại:
-
-```powershell
-.\.venv\Scripts\Activate.ps1
-```
-
-Cài thư viện:
-
-```powershell
-python -m pip install -e ".[dev,build]"
-```
+Sau đó kích hoạt lại môi trường ảo.
 
 ## Chạy ứng dụng
 
-Sau khi đã cài đặt xong, chạy:
-
-```powershell
-python -m scan_backup_manager
-```
-
-Hoặc chạy bằng file tiện ích:
-
-```powershell
-python main.py
-```
-
-Nếu không muốn kích hoạt môi trường ảo, có thể chạy trực tiếp bằng Python trong
-`.venv`:
+Chạy bằng package:
 
 ```powershell
 cd D:\CODE\Backup\Backupfile_TKDA
 .\.venv\Scripts\python.exe -m scan_backup_manager
 ```
 
-## Lệnh chạy nhanh cho các lần sau
-
-Mỗi lần mở máy hoặc mở PowerShell mới, chỉ cần:
+Hoặc chạy file tiện ích:
 
 ```powershell
-cd D:\CODE\Backup\Backupfile_TKDA
-.\.venv\Scripts\python.exe -m scan_backup_manager
+.\.venv\Scripts\python.exe main.py
 ```
 
-Hoặc:
+Nếu môi trường ảo đang được kích hoạt, có thể dùng:
 
 ```powershell
-cd D:\CODE\Backup\Backupfile_TKDA
-.\.venv\Scripts\Activate.ps1
 python -m scan_backup_manager
 ```
 
-## Tài khoản đăng nhập ban đầu
+## Đăng nhập ban đầu
 
-Khi mở ứng dụng lần đầu, chọn đăng nhập Admin.
+Khi mở ứng dụng lần đầu, chọn khu vực quản trị viên.
 
 Mật khẩu Admin mặc định:
 
@@ -175,21 +129,10 @@ Admin@123
 
 Ứng dụng sẽ yêu cầu đổi mật khẩu Admin trong lần đăng nhập đầu tiên.
 
-## Dữ liệu runtime
-
-Khi chạy, ứng dụng tự tạo dữ liệu tại thư mục `data/`, ví dụ:
-
-```text
-data/scan_backup_manager.sqlite3
-data/mock_env/
-```
-
-Các thư mục báo cáo, staging và conflict archive sẽ được tạo theo cấu hình từng
-dự án.
-
 ## Tạo dữ liệu demo
 
-Nếu muốn thử nhanh giao diện và luồng backup với dữ liệu mẫu:
+Dùng script seed để tạo nhanh dữ liệu mẫu phục vụ kiểm thử giao diện và luồng
+backup:
 
 ```powershell
 cd D:\CODE\Backup\Backupfile_TKDA
@@ -197,34 +140,23 @@ cd D:\CODE\Backup\Backupfile_TKDA
 .\.venv\Scripts\python.exe -m scan_backup_manager
 ```
 
-Script demo sẽ tạo:
-
-- Hai dự án mẫu: `PROJECT_ALPHA` và `PROJECT_BETA`.
-- Thư mục share giả lập cho máy trạm scan.
-- File PDF hợp lệ và một số file sai cấu trúc.
-- Một trường hợp xung đột backup.
-- Mapfile Excel mẫu.
-- Báo cáo Excel mẫu.
-
-Nếu đã có database cũ, script sẽ đổi tên database cũ thành file `.bak-*` trước
-khi tạo dữ liệu demo mới.
+Script sẽ tạo dự án mẫu, thư mục share giả lập, file PDF hợp lệ, một số file sai
+cấu trúc, mapfile Excel và báo cáo mẫu. Nếu database cũ đã tồn tại, script sẽ
+đổi tên database cũ thành file `.bak-*` trước khi tạo dữ liệu mới.
 
 ## Cấu hình dự án
 
-Trong tab cấu hình của từng dự án, cần khai báo:
+Trong bảng điều khiển của từng dự án, cần khai báo:
 
 - Mã dự án và tên hiển thị.
-- Thư mục backup.
-- Thư mục staging.
-- Thư mục lưu file xung đột.
-- Thư mục xuất báo cáo.
-- Danh mục khổ giấy, ví dụ A4/A3.
+- Thư mục backup, staging, conflict archive và thư mục báo cáo.
+- Danh mục khổ giấy.
 - Cây thư mục bắt buộc.
-- Danh sách máy trạm/share cần quét.
-- Nhân sự và mã PIN đăng nhập của nhân sự.
-- Lịch quét tự động theo dự án.
+- Danh sách máy trạm hoặc share cần quét.
+- Nhân sự dự án và mã PIN đăng nhập.
+- Lịch quét tự động.
 
-Ví dụ cây thư mục file scan hợp lệ:
+Ví dụ đường dẫn file scan hợp lệ:
 
 ```text
 PROJECT_ALPHA/2024/DOC/A-001/scan.pdf
@@ -232,11 +164,10 @@ PROJECT_ALPHA/2024/DOC/A-001/scan.pdf
 
 Tên thư mục dự án trên máy trạm phải khớp chính xác với mã dự án đã cấu hình.
 
-## Chạy Windows Service
+## Windows Service
 
-Pipeline backup production có thể chạy độc lập với giao diện bằng Windows Service.
-
-Sau khi cài project, mở PowerShell bằng quyền Administrator và chạy:
+Pipeline backup production có thể chạy độc lập với giao diện bằng Windows
+Service. Mở PowerShell bằng quyền Administrator:
 
 ```powershell
 cd D:\CODE\Backup\Backupfile_TKDA
@@ -245,18 +176,16 @@ scan-backup-service install --startup delayed
 scan-backup-service start
 ```
 
-Để chạy service ở chế độ console khi phát triển hoặc kiểm tra lỗi:
+Chạy service ở chế độ console khi phát triển hoặc kiểm tra lỗi:
 
 ```powershell
-cd D:\CODE\Backup\Backupfile_TKDA
-.\.venv\Scripts\Activate.ps1
 scan-backup-service-console
 ```
 
 Khi triển khai thật, nên cấu hình service chạy bằng tài khoản Windows/domain có
-quyền đọc thư mục share của máy trạm và quyền ghi vào thư mục backup trên máy chủ.
+quyền đọc share của máy trạm và quyền ghi vào thư mục backup trên máy chủ.
 
-## Build file EXE
+## Build EXE
 
 Cài đủ dependency build rồi chạy:
 
@@ -265,15 +194,15 @@ cd D:\CODE\Backup\Backupfile_TKDA
 .\packaging\build.ps1
 ```
 
-Kết quả build nằm trong thư mục `dist/`.
+Kết quả build nằm trong `dist/`.
 
-Nếu có Inno Setup, có thể tạo bộ cài:
+Nếu có Inno Setup, tạo bộ cài bằng:
 
 ```powershell
 iscc .\packaging\installer.iss
 ```
 
-## Lệnh kiểm tra dành cho lập trình viên
+## Kiểm tra dành cho lập trình viên
 
 Chạy test:
 
@@ -282,42 +211,41 @@ cd D:\CODE\Backup\Backupfile_TKDA
 .\.venv\Scripts\python.exe -m pytest
 ```
 
-Kiểm tra package có chạy được không:
+Kiểm tra cú pháp/import cơ bản:
 
 ```powershell
-.\.venv\Scripts\python.exe -m scan_backup_manager
+.\.venv\Scripts\python.exe -m compileall src tests
 ```
+
+## Dữ liệu runtime
+
+Mặc định ứng dụng tạo dữ liệu trong thư mục `data/`, ví dụ:
+
+```text
+data/scan_backup_manager.sqlite3
+data/mock_env/
+```
+
+Có thể đổi thư mục dữ liệu bằng biến môi trường:
+
+```powershell
+$env:SCAN_BACKUP_DATA_DIR = "D:\ScanBackupData"
+```
+
+Các thư mục báo cáo, staging và conflict archive được tạo theo cấu hình từng dự
+án.
 
 ## Lỗi thường gặp
 
-### PowerShell báo không thấy `python`
+### Không thấy lệnh `python`
 
-Cài Python:
-
-```powershell
-winget install --id Python.Python.3.12 -e
-```
-
-Đóng PowerShell, mở lại và kiểm tra:
-
-```powershell
-python --version
-```
-
-Nếu vẫn lỗi, tắt alias `python.exe` và `python3.exe` trong App execution aliases
-của Windows.
+Cài Python, tắt alias `python.exe` và `python3.exe` trong App execution aliases,
+sau đó mở PowerShell mới.
 
 ### Không chạy được `Activate.ps1`
 
-Chạy:
-
 ```powershell
 Set-ExecutionPolicy -Scope CurrentUser RemoteSigned
-```
-
-Sau đó chạy lại:
-
-```powershell
 .\.venv\Scripts\Activate.ps1
 ```
 
@@ -335,7 +263,7 @@ Hoặc cài lại package:
 .\.venv\Scripts\python.exe -m pip install -e ".[dev,build]"
 ```
 
-### Không clone/push được GitHub
+### Không clone hoặc push được GitHub
 
 Kiểm tra Git và GitHub CLI:
 
@@ -353,9 +281,7 @@ gh auth login
 
 ## Ghi chú triển khai
 
-- Không commit thư mục `.venv/`, `data/`, `logs/`, `dist/`.
-- Database mặc định nằm trong `data/scan_backup_manager.sqlite3` khi chạy local.
-- Có thể đặt biến môi trường `SCAN_BACKUP_DATA_DIR` để đổi thư mục lưu dữ liệu
-  runtime.
-- Khi chạy production bằng service, nên dùng tài khoản service riêng thay vì tài
-  khoản cá nhân.
+- Không commit `.venv/`, `data/`, `logs/`, `dist/`.
+- Database local mặc định là `data/scan_backup_manager.sqlite3`.
+- Nên dùng tài khoản service riêng khi chạy production.
+- Sao lưu database trước khi nâng cấp bản production hoặc thay đổi cấu hình lớn.

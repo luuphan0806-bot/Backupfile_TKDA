@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import flet as ft
 
-from ...theme import DANGER, INFO, SUCCESS, WARNING, status_color, status_label
+from ... import kit
+from ...theme import DANGER, SUCCESS, WARNING, TEXT_MUTED, status_color, status_label
 from ....service_core import JOB_REPLACE_CONFLICT, JOB_SCAN, JOB_VERIFY
 from ....constants import (
     STATUS_ERROR,
@@ -11,22 +12,6 @@ from ....constants import (
     STATUS_LOCKED,
     STATUS_WAITING_STABLE,
 )
-
-
-def _kpi_card(title: str, value: int, color: str) -> ft.Control:
-    return ft.Container(
-        expand=True,
-        padding=16,
-        border_radius=12,
-        bgcolor=ft.Colors.with_opacity(0.12, color),
-        content=ft.Column(
-            spacing=4,
-            controls=[
-                ft.Text(title, size=12, weight=ft.FontWeight.BOLD, color=color),
-                ft.Text(str(value), size=26, weight=ft.FontWeight.BOLD, color=color),
-            ],
-        ),
-    )
 
 
 def build(ctx) -> ft.Control:
@@ -54,23 +39,28 @@ def build(ctx) -> ft.Control:
         job_id = db.enqueue_job(project_id, JOB_VERIFY, requested_by_type="ADMIN")
         set_done(f"Đã gửi yêu cầu kiểm tra toàn vẹn #{job_id}.")
 
-    toolbar = ft.Row(
-        spacing=10,
-        controls=[
-            ft.FilledButton("Sao lưu ngay", icon=ft.Icons.PLAY_ARROW, on_click=run_backup),
-            ft.OutlinedButton("Kiểm tra toàn vẹn", icon=ft.Icons.FACT_CHECK, on_click=run_verify),
-            ft.OutlinedButton("Làm mới", icon=ft.Icons.REFRESH, on_click=lambda _e: ctx.refresh()),
-            status_banner,
-        ],
+    toolbar = kit.card(
+        ft.Row(
+            spacing=10,
+            wrap=True,
+            vertical_alignment=ft.CrossAxisAlignment.CENTER,
+            controls=[
+                kit.primary_button("Sao lưu ngay", icon=ft.Icons.PLAY_ARROW, on_click=run_backup),
+                kit.ghost_button("Kiểm tra toàn vẹn", icon=ft.Icons.FACT_CHECK, on_click=run_verify),
+                kit.ghost_button("Làm mới", icon=ft.Icons.REFRESH, on_click=lambda _e: ctx.refresh()),
+                status_banner,
+            ],
+        ),
+        padding=14,
     )
 
     kpi_row = ft.Row(
         spacing=12,
         controls=[
-            _kpi_card("Chờ kiểm tra toàn vẹn", counts.get(STATUS_HASH_PENDING, 0), WARNING),
-            _kpi_card("File đã khóa", counts.get(STATUS_LOCKED, 0), SUCCESS),
-            _kpi_card("Lỗi cần xử lý", counts.get(STATUS_ERROR, 0) + counts.get(STATUS_INVALID_STRUCTURE, 0), DANGER),
-            _kpi_card("Xung đột mở", counts.get("OPEN_CONFLICTS", 0), WARNING),
+            kit.stat_tile("Chờ kiểm tra toàn vẹn", counts.get(STATUS_HASH_PENDING, 0), WARNING, icon=ft.Icons.FACT_CHECK),
+            kit.stat_tile("File đã khóa", counts.get(STATUS_LOCKED, 0), SUCCESS, icon=ft.Icons.LOCK),
+            kit.stat_tile("Lỗi cần xử lý", counts.get(STATUS_ERROR, 0) + counts.get(STATUS_INVALID_STRUCTURE, 0), DANGER, icon=ft.Icons.ERROR_OUTLINE),
+            kit.stat_tile("Xung đột mở", counts.get("OPEN_CONFLICTS", 0), WARNING, icon=ft.Icons.WARNING_AMBER),
         ],
     )
 
@@ -88,7 +78,7 @@ def build(ctx) -> ft.Control:
                 cells=[
                     ft.DataCell(ft.Text(client.client_code)),
                     ft.DataCell(ft.Text(client.share_path)),
-                    ft.DataCell(ft.Text("Bật" if client.enabled else "Tắt")),
+                    ft.DataCell(kit.badge("Bật", SUCCESS) if client.enabled else kit.badge("Tắt", TEXT_MUTED)),
                     ft.DataCell(ft.Text(str(pending), color=WARNING if pending else None)),
                     ft.DataCell(ft.Text(str(errors), color=DANGER if errors else None)),
                 ]
@@ -110,7 +100,7 @@ def build(ctx) -> ft.Control:
             cells=[
                 ft.DataCell(ft.Text(row["client_code"])),
                 ft.DataCell(ft.Text(row["relative_project_path"])),
-                ft.DataCell(ft.Text(status_label(row["status"]), color=status_color(row["status"]))),
+                ft.DataCell(kit.badge(status_label(row["status"]), status_color(row["status"]))),
                 ft.DataCell(ft.Text(row["error_message"] or "", max_lines=1)),
             ]
         )
@@ -142,8 +132,8 @@ def build(ctx) -> ft.Control:
                 ft.DataCell(ft.Text(row["source_path"], max_lines=1)),
                 ft.DataCell(ft.Text(row["dest_path"], max_lines=1)),
                 ft.DataCell(
-                    ft.FilledButton(
-                        "Thay thế", bgcolor=WARNING,
+                    kit.ghost_button(
+                        "Thay thế", icon=ft.Icons.SWAP_HORIZ, accent=WARNING,
                         on_click=lambda _e, cid=row["id"]: replace_conflict(cid),
                     )
                 ),
@@ -168,11 +158,11 @@ def build(ctx) -> ft.Control:
         controls=[
             toolbar,
             kpi_row,
-            ft.Text("Tình trạng máy trạm", size=15, weight=ft.FontWeight.BOLD),
-            clients_table,
-            ft.Text("Hoạt động backup gần đây", size=15, weight=ft.FontWeight.BOLD),
-            activity_table,
-            ft.Text(f"Xung đột đang mở ({len(conflicts)})", size=15, weight=ft.FontWeight.BOLD),
-            conflicts_table if conflicts else ft.Text("Không có xung đột nào.", color=ft.Colors.ON_SURFACE_VARIANT),
+            kit.eyebrow("Tình trạng máy trạm"),
+            kit.table_frame(clients_table),
+            kit.eyebrow("Hoạt động backup gần đây"),
+            kit.table_frame(activity_table),
+            kit.eyebrow(f"Xung đột đang mở ({len(conflicts)})"),
+            kit.table_frame(conflicts_table) if conflicts else ft.Text("Không có xung đột nào.", color=TEXT_MUTED),
         ],
     )

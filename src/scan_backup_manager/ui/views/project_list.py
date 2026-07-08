@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import flet as ft
 
+from .. import kit
+from ..theme import SUCCESS, TEXT_MUTED
 from ...models import Project
 
 
@@ -79,29 +81,29 @@ def build(shell) -> ft.Control:
 
     def project_card(project: Project) -> ft.Control:
         project_id = project.id or 0
-        return ft.Container(
-            padding=16,
-            border_radius=12,
-            bgcolor=ft.Colors.SURFACE,
-            content=ft.Row(
+        return kit.card(
+            ft.Row(
                 alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
                 vertical_alignment=ft.CrossAxisAlignment.CENTER,
                 controls=[
                     ft.Column(
-                        spacing=2,
+                        spacing=4,
                         controls=[
                             ft.Text(project.display_name, size=15, weight=ft.FontWeight.BOLD),
-                            ft.Text(project.project_code, size=12, color=ft.Colors.ON_SURFACE_VARIANT),
-                            ft.Text(
-                                "Đang bật" if project.enabled else "Đã tắt",
-                                size=12,
-                                color=ft.Colors.PRIMARY if project.enabled else ft.Colors.ON_SURFACE_VARIANT,
-                            ),
+                            ft.Text(project.project_code, size=12, color=TEXT_MUTED),
                         ],
                     ),
-                    ft.FilledButton("Mở trang điều khiển", on_click=lambda _e, pid=project_id: shell.open_project(pid)),
+                    ft.Row(
+                        spacing=16,
+                        vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                        controls=[
+                            kit.badge("Đang bật", SUCCESS) if project.enabled else kit.badge("Đã tắt", TEXT_MUTED),
+                            kit.primary_button("Mở trang điều khiển", icon=ft.Icons.ARROW_FORWARD, on_click=lambda _e, pid=project_id: shell.open_project(pid)),
+                        ],
+                    ),
                 ],
             ),
+            padding=16, radius=12,
         )
 
     if projects:
@@ -109,7 +111,7 @@ def build(shell) -> ft.Control:
     else:
         listing = ft.Text(
             "Chưa có dự án nào. Bấm \"Tạo dự án mới\" để bắt đầu.",
-            color=ft.Colors.ON_SURFACE_VARIANT,
+            color=TEXT_MUTED,
         )
 
     return ft.Column(
@@ -117,20 +119,12 @@ def build(shell) -> ft.Control:
         spacing=16,
         scroll=ft.ScrollMode.AUTO,
         controls=[
-            ft.Row(
-                alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
-                controls=[
-                    ft.Column(
-                        spacing=2,
-                        controls=[
-                            ft.Text("Danh sách dự án", size=22, weight=ft.FontWeight.BOLD),
-                            ft.Text(
-                                "Bấm vào một dự án để mở trang điều khiển riêng của dự án đó.",
-                                size=13, color=ft.Colors.ON_SURFACE_VARIANT,
-                            ),
-                        ],
-                    ),
-                    ft.FilledButton(
+            kit.page_header(
+                "Danh sách dự án",
+                "Bấm vào một dự án để mở trang điều khiển riêng của dự án đó.",
+                eyebrow_text="Quản lý dự án",
+                actions=[
+                    kit.primary_button(
                         "Tạo dự án mới", icon=ft.Icons.ADD,
                         on_click=lambda _e: _open_create_project_dialog(shell),
                     ),

@@ -5,23 +5,26 @@ from datetime import datetime, timedelta
 import flet as ft
 import flet_charts as fc
 
-from ...theme import DANGER, INFO, SUCCESS, WARNING
+from ... import kit
+from ...theme import ACCENT_2, DANGER, INFO, PRIMARY_DARK, SUCCESS, WARNING, TEXT_MUTED
 from ...workers import run_worker
 
+# Two-series categorical pair for the productivity chart. Cyan vs magenta is a
+# CVD-robust duo (they separate on both lightness and the red axis that stays
+# intact under protan/deutan); status hues (green/amber) are deliberately kept
+# out of the series role. Series identity is reinforced by paired position per
+# day + the legend, so it never rests on colour alone.
+CHART_DONE = PRIMARY_DARK
+CHART_BACKED = ACCENT_2
 
-def _stat_tile(title: str, value: str, color: str) -> ft.Control:
-    return ft.Container(
-        expand=True,
-        padding=16,
-        border_radius=12,
-        bgcolor=ft.Colors.with_opacity(0.12, color),
-        content=ft.Column(
-            spacing=4,
-            controls=[
-                ft.Text(title, size=12, weight=ft.FontWeight.BOLD, color=color),
-                ft.Text(value, size=22, weight=ft.FontWeight.BOLD, color=color),
-            ],
-        ),
+
+def _legend_swatch(color: str, label: str) -> ft.Control:
+    return ft.Row(
+        spacing=6,
+        controls=[
+            ft.Container(width=12, height=12, bgcolor=color, border_radius=3),
+            ft.Text(label, size=12, color=TEXT_MUTED),
+        ],
     )
 
 
@@ -46,13 +49,13 @@ def build(ctx) -> ft.Control:
         kpi_row = ft.Row(
             spacing=12,
             controls=[
-                _stat_tile("Tổng dòng mapfile", str(ratio.total_rows), INFO),
-                _stat_tile("Đã quét xong", f"{ratio.done_count} ({ratio.done_pct:.1f}%)", WARNING),
-                _stat_tile("Đã khớp (Matched)", f"{ratio.matched_count} ({ratio.matched_pct:.1f}%)", SUCCESS),
-                _stat_tile(
+                kit.stat_tile("Tổng dòng mapfile", str(ratio.total_rows), INFO, icon=ft.Icons.LIST_ALT),
+                kit.stat_tile("Đã quét xong", f"{ratio.done_count} ({ratio.done_pct:.1f}%)", WARNING, icon=ft.Icons.DOCUMENT_SCANNER),
+                kit.stat_tile("Đã khớp (Matched)", f"{ratio.matched_count} ({ratio.matched_pct:.1f}%)", SUCCESS, icon=ft.Icons.VERIFIED),
+                kit.stat_tile(
                     "TB từ quét xong đến sao lưu",
                     f"{latency.average_hours:.1f} giờ" if latency.average_hours is not None else "-",
-                    DANGER,
+                    DANGER, icon=ft.Icons.TIMER_OUTLINED,
                 ),
             ],
         )
@@ -62,27 +65,38 @@ def build(ctx) -> ft.Control:
             fc.BarChartGroup(
                 x=index,
                 rods=[
-                    fc.BarChartRod(from_y=0, to_y=day.done_count, color=WARNING, width=8),
-                    fc.BarChartRod(from_y=0, to_y=day.backed_up_count, color=SUCCESS, width=8),
+                    fc.BarChartRod(
+                        from_y=0, to_y=day.done_count, color=CHART_DONE, width=9, border_radius=4,
+                        tooltip=f"{day.day[5:]} · Đã quét xong: {day.done_count}",
+                    ),
+                    fc.BarChartRod(
+                        from_y=0, to_y=day.backed_up_count, color=CHART_BACKED, width=9, border_radius=4,
+                        tooltip=f"{day.day[5:]} · Đã sao lưu: {day.backed_up_count}",
+                    ),
                 ],
             )
             for index, day in enumerate(daily)
         ]
         chart = fc.BarChart(
             groups=groups,
+            interactive=True,
             max_y=max_value * 1.2,
+            bgcolor=ft.Colors.TRANSPARENT,
             bottom_axis=fc.ChartAxis(
-                labels=[fc.ChartAxisLabel(value=index, label=day.day[5:]) for index, day in enumerate(daily)],
+                labels=[
+                    fc.ChartAxisLabel(value=index, label=ft.Text(day.day[5:], size=10, color=TEXT_MUTED))
+                    for index, day in enumerate(daily)
+                ],
                 label_size=32,
             ),
             height=260,
-        ) if daily else ft.Text("Không có dữ liệu trong khoảng ngày đã chọn.", color=ft.Colors.ON_SURFACE_VARIANT)
+        ) if daily else ft.Text("Không có dữ liệu trong khoảng ngày đã chọn.", color=TEXT_MUTED)
 
         chart_legend = ft.Row(
             spacing=16,
             controls=[
-                ft.Row(spacing=6, controls=[ft.Container(width=12, height=12, bgcolor=WARNING, border_radius=3), ft.Text("Đã quét xong", size=12)]),
-                ft.Row(spacing=6, controls=[ft.Container(width=12, height=12, bgcolor=SUCCESS, border_radius=3), ft.Text("Đã sao lưu", size=12)]),
+                _legend_swatch(CHART_DONE, "Đã quét xong"),
+                _legend_swatch(CHART_BACKED, "Đã sao lưu"),
             ],
         )
 
@@ -123,12 +137,12 @@ def build(ctx) -> ft.Control:
             spacing=16,
             controls=[
                 kpi_row,
-                ft.Text("Năng suất theo ngày", size=15, weight=ft.FontWeight.BOLD),
+                kit.eyebrow("Năng suất theo ngày"),
                 chart_legend,
-                chart,
-                ft.Text("Năng suất theo nhân sự", size=15, weight=ft.FontWeight.BOLD),
-                personnel_table if by_personnel else ft.Text("Chưa có dữ liệu nhân sự trong khoảng ngày này.", color=ft.Colors.ON_SURFACE_VARIANT),
-                ft.Row(controls=[ft.FilledButton("Xuất báo cáo thống kê", icon=ft.Icons.DOWNLOAD, on_click=do_export), status_text]),
+                kit.card(chart, padding=16) if daily else chart,
+                kit.eyebrow("Năng suất theo nhân sự"),
+                kit.table_frame(personnel_table) if by_personnel else ft.Text("Chưa có dữ liệu nhân sự trong khoảng ngày này.", color=TEXT_MUTED),
+                ft.Row(controls=[kit.primary_button("Xuất báo cáo thống kê", icon=ft.Icons.DOWNLOAD, on_click=do_export), status_text]),
             ],
         )
         ctx.page.update()
@@ -136,9 +150,13 @@ def build(ctx) -> ft.Control:
     def apply_range(_event=None) -> None:
         render_results(date_from_field.value or default_from, date_to_field.value or default_to)
 
-    filter_bar = ft.Row(
-        spacing=10,
-        controls=[date_from_field, date_to_field, ft.FilledButton("Xem thống kê", icon=ft.Icons.QUERY_STATS, on_click=apply_range)],
+    filter_bar = kit.card(
+        ft.Row(
+            spacing=10,
+            vertical_alignment=ft.CrossAxisAlignment.CENTER,
+            controls=[date_from_field, date_to_field, kit.primary_button("Xem thống kê", icon=ft.Icons.QUERY_STATS, on_click=apply_range)],
+        ),
+        padding=14,
     )
 
     render_results(default_from, default_to)
@@ -150,7 +168,7 @@ def build(ctx) -> ft.Control:
         controls=[
             ft.Text(
                 "Thống kê năng suất theo khoảng ngày: số hồ sơ đã quét xong, đã sao lưu và thời gian xử lý.",
-                size=13, color=ft.Colors.ON_SURFACE_VARIANT,
+                size=13, color=TEXT_MUTED,
             ),
             filter_bar,
             results_container,

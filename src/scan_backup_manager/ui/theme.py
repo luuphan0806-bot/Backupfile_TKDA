@@ -2,27 +2,55 @@ from __future__ import annotations
 
 import flet as ft
 
-# Hitech / futuristic system palette. Every hue below was picked with an
-# electric, "hologram on deep space" mood, then verified (not eyeballed) with
-# the dataviz skill's palette validator: dark-mode lightness band (OKLCH L
-# 0.48-0.67), chroma floor (>= 0.10), CVD separation (all-pairs Machado-2009
-# ΔE >= 12), and >= 3:1 contrast on both the dark (#05070D) and light
-# (#F6F8FC) surfaces -- see the four status hues below, which all pass clean
-# in both modes.
-PRIMARY = "#3D5AFE"          # light-mode seed: electric indigo-blue
-PRIMARY_DARK = "#22E1FF"     # dark-mode seed: electric cyan (the "glow" accent)
-ACCENT = "#8B6CFF"           # secondary neon violet, for gradients/hero accents
+# ---------------------------------------------------------------------------
+# Cyan cyberpunk design system -- dark only.
+#
+# The whole app renders on one deep-space plane with electric-cyan accents.
+# Every hue below was picked for an "hologram on deep space" mood and the four
+# status hues were verified (not eyeballed) with the dataviz palette validator:
+# dark-mode lightness band (OKLCH L 0.48-0.67), chroma floor (>= 0.10), CVD
+# separation (all-pairs Machado-2009 ΔE >= 12), and >= 3:1 contrast on the dark
+# (#05070D) surface.
+# ---------------------------------------------------------------------------
 
-BACKGROUND_DARK = "#05070D"      # near-black, cool -- the "deep space" plane
-SURFACE_DARK = "#0C0F1A"
-SURFACE_HIGH_DARK = "#141A2B"    # elevated cards/dialogs
-BACKGROUND_LIGHT = "#F6F8FC"
+PRIMARY = "#3D5AFE"          # legacy light seed (kept for reference)
+PRIMARY_DARK = "#22E1FF"     # THE cyan glow accent -- primary throughout
+ACCENT = "#8B6CFF"           # neon violet, for gradients/hero accents
+ACCENT_2 = "#FF4D9D"         # neon magenta, sparing secondary accent
 
+# Deep-space surface stack
+BG_BASE = "#05070D"          # near-black cool -- the base plane
+BG_GRADIENT_TOP = "#0B1226"  # top-left glow of the background gradient
+SURFACE = "#0C0F1A"          # cards / panels
+SURFACE_HIGH = "#141A2B"     # elevated cards / dialogs / hover
+SURFACE_INPUT = "#0A0E19"    # text field / dropdown fill
+
+# Text
+TEXT_PRIMARY = "#E7EEFB"     # near-white, cool
+TEXT_MUTED = "#8B94A7"       # secondary / captions
+
+# Status (validated)
 SUCCESS = "#0C9663"
 WARNING = "#C08313"
 DANGER = "#FF3B5C"
 INFO = "#4C8DFF"
 NEUTRAL = "#8B94A7"
+
+# Hairlines / glows built from the cyan accent
+LINE = ft.Colors.with_opacity(0.20, PRIMARY_DARK)
+LINE_STRONG = ft.Colors.with_opacity(0.55, PRIMARY_DARK)
+GLOW_CYAN = ft.Colors.with_opacity(0.35, PRIMARY_DARK)
+
+
+def background_gradient() -> ft.LinearGradient:
+    """The deep-space plane every full-screen surface sits on."""
+    return ft.LinearGradient(
+        begin=ft.Alignment.TOP_LEFT,
+        end=ft.Alignment.BOTTOM_RIGHT,
+        colors=[BG_GRADIENT_TOP, BG_BASE, BG_BASE],
+        stops=[0.0, 0.55, 1.0],
+    )
+
 
 def content_switcher(initial: ft.Control | None = None) -> ft.Container:
     """Plain content host used for screen swaps without transition animation."""
@@ -32,21 +60,33 @@ def content_switcher(initial: ft.Control | None = None) -> ft.Container:
     )
 
 
-def build_theme(mode: str) -> ft.Theme:
-    seed = PRIMARY if mode == "light" else PRIMARY_DARK
+def scrollable_table(table: ft.Control) -> ft.Control:
+    """Wrap a wide DataTable so it scrolls horizontally instead of
+    overflowing (and visually overlapping) neighbouring content on narrow
+    windows. `kit.table_frame` is the styled superset used for primary tables;
+    this stays as the minimal wrapper for tables already inside a card."""
+    return ft.Row(
+        controls=[table],
+        scroll=ft.ScrollMode.AUTO,
+        vertical_alignment=ft.CrossAxisAlignment.START,
+    )
+
+
+def build_theme() -> ft.Theme:
     return ft.Theme(
-        color_scheme_seed=seed,
+        color_scheme_seed=PRIMARY_DARK,
         font_family="Segoe UI",
         visual_density=ft.VisualDensity.COMPACT,
     )
 
 
-def apply_theme(page: ft.Page, mode: str) -> None:
-    page.theme_mode = ft.ThemeMode.DARK if mode == "dark" else ft.ThemeMode.LIGHT
-    page.theme = build_theme("light")
-    page.dark_theme = build_theme("dark")
+def apply_theme(page: ft.Page) -> None:
+    """Dark-only cyberpunk theme. No light variant."""
+    page.theme_mode = ft.ThemeMode.DARK
+    page.theme = build_theme()
+    page.dark_theme = build_theme()
     page.padding = 0
-    page.bgcolor = BACKGROUND_DARK if mode == "dark" else BACKGROUND_LIGHT
+    page.bgcolor = BG_BASE
 
 
 def status_color(status: str) -> str:

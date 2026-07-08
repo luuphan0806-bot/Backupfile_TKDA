@@ -5,8 +5,17 @@ import flet as ft
 from ..constants import APP_NAME, runtime_db_path
 from ..db import Database
 from ..logging_config import get_logger, setup_logging
+from . import kit
 from .state import AppState
-from .theme import apply_theme, content_switcher
+from .theme import (
+    LINE,
+    PRIMARY_DARK,
+    SURFACE,
+    TEXT_MUTED,
+    apply_theme,
+    background_gradient,
+    content_switcher,
+)
 from .views import audit as audit_view
 from .views import global_settings as settings_view
 from .views import overview as overview_view
@@ -34,7 +43,7 @@ class ScanBackupFletApp:
         self.page.window.height = 860
         self.page.window.min_width = 1100
         self.page.window.min_height = 700
-        apply_theme(self.page, self.state.theme_mode)
+        apply_theme(self.page)
 
         get_logger().info("App started (db_path=%s)", self.db.db_path)
         self.show_role_selection()
@@ -43,15 +52,27 @@ class ScanBackupFletApp:
     # Navigation helpers
     # ------------------------------------------------------------------
     def set_root(self, control: ft.Control) -> None:
+        """Every screen sits on the deep-space gradient plane."""
         self.page.controls.clear()
-        self.page.controls.append(control)
+        self.page.controls.append(
+            ft.Container(expand=True, gradient=background_gradient(), content=control)
+        )
         self.page.update()
 
-    def toggle_theme(self) -> None:
-        self.state.theme_mode = "light" if self.state.theme_mode == "dark" else "dark"
-        self.db.set_setting("theme_mode", self.state.theme_mode)
-        apply_theme(self.page, self.state.theme_mode)
-        self.page.update()
+    def _auth_screen(self, card: ft.Control) -> ft.Control:
+        return ft.Container(expand=True, alignment=ft.Alignment.CENTER, content=card)
+
+    def _hero(self, heading: str, subtitle: str) -> ft.Control:
+        return ft.Column(
+            horizontal_alignment=ft.CrossAxisAlignment.CENTER,
+            spacing=10,
+            controls=[
+                kit.logo_mark(52),
+                kit.eyebrow("Secure Archive System"),
+                ft.Text(heading, size=28, weight=ft.FontWeight.BOLD),
+                ft.Text(subtitle, size=13, color=TEXT_MUTED, text_align=ft.TextAlign.CENTER),
+            ],
+        )
 
     # ------------------------------------------------------------------
     # Auth flow
@@ -65,68 +86,52 @@ class ScanBackupFletApp:
         def go_personnel(_event) -> None:
             self.show_personnel_login()
 
-        card = ft.Container(
-            width=760,
-            padding=48,
-            border_radius=20,
-            bgcolor=ft.Colors.SURFACE,
-            content=ft.Column(
+        card = kit.card(
+            ft.Column(
                 horizontal_alignment=ft.CrossAxisAlignment.CENTER,
-                spacing=18,
+                spacing=26,
                 controls=[
-                    ft.Text(APP_NAME, size=30, weight=ft.FontWeight.BOLD),
-                    ft.Text("Chọn khu vực để tiếp tục", size=14, color=ft.Colors.ON_SURFACE_VARIANT),
+                    self._hero(APP_NAME, "Chọn khu vực để tiếp tục"),
                     ft.Row(
                         spacing=16,
                         controls=[
-                            ft.FilledButton(
-                                "Quản trị viên", on_click=go_admin,
-                                height=90, width=310,
-                                style=ft.ButtonStyle(text_style=ft.TextStyle(size=16)),
+                            kit.primary_button(
+                                "Quản trị viên", on_click=go_admin, icon=ft.Icons.ADMIN_PANEL_SETTINGS,
+                                height=88, width=300,
                             ),
-                            ft.OutlinedButton(
-                                "Nhân sự dự án", on_click=go_personnel,
-                                height=90, width=310,
-                                style=ft.ButtonStyle(text_style=ft.TextStyle(size=16)),
+                            kit.ghost_button(
+                                "Nhân sự dự án", on_click=go_personnel, icon=ft.Icons.BADGE,
+                                height=88, width=300,
                             ),
                         ],
                     ),
                 ],
             ),
+            glow_color=PRIMARY_DARK,
+            padding=48,
+            radius=20,
         )
-        self.set_root(
-            ft.Container(
-                expand=True,
-                alignment=ft.Alignment.CENTER,
-                content=card,
-            )
-        )
+        card.width = 760
+        self.set_root(self._auth_screen(card))
 
     def show_personnel_placeholder(self) -> None:
-        self.set_root(
-            ft.Container(
-                expand=True,
-                alignment=ft.Alignment.CENTER,
-                content=ft.Container(
-                    width=560,
-                    padding=48,
-                    border_radius=20,
-                    bgcolor=ft.Colors.SURFACE,
-                    content=ft.Column(
-                        horizontal_alignment=ft.CrossAxisAlignment.CENTER,
-                        spacing=16,
-                        controls=[
-                            ft.Text("Nhân sự dự án", size=24, weight=ft.FontWeight.BOLD),
-                            ft.Text(
-                                "Chức năng đang được phát triển và sẽ cấu hình ở giai đoạn sau.",
-                                size=14, color=ft.Colors.ON_SURFACE_VARIANT,
-                            ),
-                            ft.OutlinedButton("Quay lại", on_click=lambda _e: self.show_role_selection()),
-                        ],
+        card = kit.card(
+            ft.Column(
+                horizontal_alignment=ft.CrossAxisAlignment.CENTER,
+                spacing=16,
+                controls=[
+                    ft.Text("Nhân sự dự án", size=24, weight=ft.FontWeight.BOLD),
+                    ft.Text(
+                        "Chức năng đang được phát triển và sẽ cấu hình ở giai đoạn sau.",
+                        size=14, color=TEXT_MUTED,
                     ),
-                ),
-            )
+                    kit.ghost_button("Quay lại", on_click=lambda _e: self.show_role_selection()),
+                ],
+            ),
+            padding=48, radius=20,
         )
+        card.width = 560
+        self.set_root(self._auth_screen(card))
 
     def show_personnel_login(self) -> None:
         project_field = ft.TextField(label="Mã dự án", width=320)
@@ -159,23 +164,20 @@ class ScanBackupFletApp:
             else:
                 self.show_personnel_home()
 
-        self.set_root(
-            ft.Container(
-                expand=True, alignment=ft.Alignment.CENTER,
-                content=ft.Container(
-                    width=460, padding=48, border_radius=20, bgcolor=ft.Colors.SURFACE,
-                    content=ft.Column(
-                        horizontal_alignment=ft.CrossAxisAlignment.CENTER, spacing=12,
-                        controls=[
-                            ft.Text("Đăng nhập nhân sự", size=24, weight=ft.FontWeight.BOLD),
-                            project_field, code_field, pin_field, error,
-                            ft.FilledButton("Đăng nhập", on_click=submit, width=200),
-                            ft.TextButton("Quay lại", on_click=lambda _e: self.show_role_selection()),
-                        ],
-                    ),
-                ),
-            )
+        card = kit.card(
+            ft.Column(
+                horizontal_alignment=ft.CrossAxisAlignment.CENTER, spacing=14,
+                controls=[
+                    self._hero("Đăng nhập nhân sự", "Nhập thông tin được cấp để tiếp tục"),
+                    project_field, code_field, pin_field, error,
+                    kit.primary_button("Đăng nhập", on_click=submit, width=220),
+                    ft.TextButton("Quay lại", on_click=lambda _e: self.show_role_selection()),
+                ],
+            ),
+            glow_color=PRIMARY_DARK, padding=44, radius=20,
         )
+        card.width = 460
+        self.set_root(self._auth_screen(card))
 
     def show_personnel_change_pin(
         self, project_code: str, personnel_code: str, current_pin: str
@@ -199,19 +201,19 @@ class ScanBackupFletApp:
                     return
             self.page.update()
 
-        self.set_root(ft.Container(
-            expand=True, alignment=ft.Alignment.CENTER,
-            content=ft.Container(
-                width=440, padding=48, border_radius=20, bgcolor=ft.Colors.SURFACE,
-                content=ft.Column(
-                    horizontal_alignment=ft.CrossAxisAlignment.CENTER,
-                    controls=[
-                        ft.Text("Đổi mã PIN", size=24, weight=ft.FontWeight.BOLD),
-                        new_pin, confirm, error, ft.FilledButton("Lưu mã PIN", on_click=save),
-                    ],
-                ),
+        card = kit.card(
+            ft.Column(
+                horizontal_alignment=ft.CrossAxisAlignment.CENTER, spacing=14,
+                controls=[
+                    ft.Text("Đổi mã PIN", size=24, weight=ft.FontWeight.BOLD),
+                    new_pin, confirm, error,
+                    kit.primary_button("Lưu mã PIN", on_click=save, width=220),
+                ],
             ),
-        ))
+            padding=44, radius=20,
+        )
+        card.width = 440
+        self.set_root(self._auth_screen(card))
 
     def show_personnel_home(self) -> None:
         personnel_id = self.state.personnel_id
@@ -254,17 +256,24 @@ class ScanBackupFletApp:
         )
         self.set_root(ft.Column(
             expand=True,
+            spacing=0,
             controls=[
                 ft.Container(
-                    padding=20, bgcolor=ft.Colors.SURFACE,
+                    padding=20,
+                    bgcolor=SURFACE,
+                    border=ft.Border.only(bottom=ft.BorderSide(1, LINE)),
                     content=ft.Row(
                         alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
+                        vertical_alignment=ft.CrossAxisAlignment.CENTER,
                         controls=[
-                            ft.Column(spacing=2, controls=[
-                                ft.Text(f"Xin chào, {person.full_name if person else ''}", size=22, weight=ft.FontWeight.BOLD),
-                                ft.Text("Theo dõi công việc và xác nhận hồ sơ đã quét xong."),
+                            ft.Row(spacing=12, controls=[
+                                kit.logo_mark(38),
+                                ft.Column(spacing=2, controls=[
+                                    ft.Text(f"Xin chào, {person.full_name if person else ''}", size=20, weight=ft.FontWeight.BOLD),
+                                    ft.Text("Theo dõi công việc và xác nhận hồ sơ đã quét xong.", size=12, color=TEXT_MUTED),
+                                ]),
                             ]),
-                            ft.OutlinedButton("Đăng xuất", on_click=lambda _e: self.show_role_selection()),
+                            kit.ghost_button("Đăng xuất", icon=ft.Icons.LOGOUT, on_click=lambda _e: self.show_role_selection()),
                         ],
                     ),
                 ),
@@ -272,9 +281,11 @@ class ScanBackupFletApp:
                     expand=True, padding=24,
                     content=ft.Column(
                         scroll=ft.ScrollMode.AUTO,
+                        spacing=14,
                         controls=[
-                            ft.Text(f"Danh mục hồ sơ ({total})", size=18, weight=ft.FontWeight.BOLD),
-                            record_table if rows else ft.Text("Chưa có danh mục hồ sơ."),
+                            kit.eyebrow("Danh mục hồ sơ"),
+                            ft.Text(f"Tổng {total} hồ sơ", size=18, weight=ft.FontWeight.BOLD),
+                            kit.table_frame(record_table) if rows else ft.Text("Chưa có danh mục hồ sơ.", color=TEXT_MUTED),
                         ],
                     ),
                 ),
@@ -298,29 +309,21 @@ class ScanBackupFletApp:
 
         password_field.on_submit = submit
 
-        self.set_root(
-            ft.Container(
-                expand=True,
-                alignment=ft.Alignment.CENTER,
-                content=ft.Container(
-                    width=440,
-                    padding=48,
-                    border_radius=20,
-                    bgcolor=ft.Colors.SURFACE,
-                    content=ft.Column(
-                        horizontal_alignment=ft.CrossAxisAlignment.CENTER,
-                        spacing=14,
-                        controls=[
-                            ft.Text("Đăng nhập quản trị hệ thống", size=22, weight=ft.FontWeight.BOLD),
-                            password_field,
-                            error_text,
-                            ft.FilledButton("Đăng nhập", on_click=submit, width=200),
-                            ft.TextButton("Quay lại", on_click=lambda _e: self.show_role_selection()),
-                        ],
-                    ),
-                ),
-            )
+        card = kit.card(
+            ft.Column(
+                horizontal_alignment=ft.CrossAxisAlignment.CENTER, spacing=16,
+                controls=[
+                    self._hero("Quản trị hệ thống", "Đăng nhập để mở bảng điều khiển"),
+                    password_field,
+                    error_text,
+                    kit.primary_button("Đăng nhập", on_click=submit, width=220),
+                    ft.TextButton("Quay lại", on_click=lambda _e: self.show_role_selection()),
+                ],
+            ),
+            glow_color=PRIMARY_DARK, padding=44, radius=20,
         )
+        card.width = 460
+        self.set_root(self._auth_screen(card))
 
     def show_change_password(self, *, force: bool = False, current_password: str = "") -> None:
         current_field = ft.TextField(label="Mật khẩu hiện tại", password=True, value=current_password, width=340)
@@ -344,23 +347,17 @@ class ScanBackupFletApp:
         controls = [
             ft.Text("Đổi mật khẩu", size=22, weight=ft.FontWeight.BOLD),
             current_field, new_field, confirm_field, error_text,
-            ft.FilledButton("Lưu", on_click=submit, width=200),
+            kit.primary_button("Lưu", on_click=submit, width=220),
         ]
         if not force:
             controls.append(ft.TextButton("Quay lại", on_click=lambda _e: self.show_main_shell()))
 
-        self.set_root(
-            ft.Container(
-                expand=True,
-                alignment=ft.Alignment.CENTER,
-                content=ft.Container(
-                    width=460, padding=48, border_radius=20, bgcolor=ft.Colors.SURFACE,
-                    content=ft.Column(
-                        horizontal_alignment=ft.CrossAxisAlignment.CENTER, spacing=14, controls=controls,
-                    ),
-                ),
-            )
+        card = kit.card(
+            ft.Column(horizontal_alignment=ft.CrossAxisAlignment.CENTER, spacing=14, controls=controls),
+            padding=44, radius=20,
         )
+        card.width = 480
+        self.set_root(self._auth_screen(card))
 
     # ------------------------------------------------------------------
     # Main shell (post-login)
@@ -375,6 +372,7 @@ class ScanBackupFletApp:
         self.sidebar_collapsed = self.current_project_id is not None
         self.sidebar_toggle = ft.IconButton(
             icon=ft.Icons.MENU if self.sidebar_collapsed else ft.Icons.MENU_OPEN,
+            icon_color=PRIMARY_DARK,
             tooltip="Mở rộng menu" if self.sidebar_collapsed else "Thu gọn menu",
             on_click=lambda _e: self._set_sidebar_collapsed(not self.sidebar_collapsed),
         )
@@ -384,6 +382,10 @@ class ScanBackupFletApp:
             label_type=ft.NavigationRailLabelType.NONE,
             min_width=72,
             min_extended_width=220,
+            bgcolor=ft.Colors.TRANSPARENT,
+            indicator_color=ft.Colors.with_opacity(0.16, PRIMARY_DARK),
+            selected_label_text_style=ft.TextStyle(color=PRIMARY_DARK, weight=ft.FontWeight.BOLD),
+            unselected_label_text_style=ft.TextStyle(color=TEXT_MUTED),
             leading=self.sidebar_toggle,
             destinations=[
                 ft.NavigationRailDestination(icon=ft.Icons.SPACE_DASHBOARD_OUTLINED, selected_icon=ft.Icons.SPACE_DASHBOARD, label="Tổng Quan"),
@@ -397,30 +399,34 @@ class ScanBackupFletApp:
         self.sidebar_container = ft.Container(
             width=72 if self.sidebar_collapsed else 220,
             clip_behavior=ft.ClipBehavior.HARD_EDGE,
+            bgcolor=SURFACE,
+            border=ft.Border.only(right=ft.BorderSide(1, LINE)),
             content=rail,
         )
 
         top_bar = ft.Row(
             alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
+            vertical_alignment=ft.CrossAxisAlignment.CENTER,
             controls=[
-                ft.Text(APP_NAME, size=18, weight=ft.FontWeight.BOLD),
+                ft.Row(spacing=12, vertical_alignment=ft.CrossAxisAlignment.CENTER, controls=[
+                    kit.logo_mark(34),
+                    ft.Column(spacing=0, controls=[
+                        ft.Text(APP_NAME, size=17, weight=ft.FontWeight.BOLD),
+                        kit.eyebrow("Secure Archive System"),
+                    ]),
+                ]),
                 ft.Row(
-                    spacing=6,
+                    spacing=8,
                     controls=[
-                        ft.IconButton(
-                            icon=ft.Icons.DARK_MODE if self.state.theme_mode == "light" else ft.Icons.LIGHT_MODE,
-                            tooltip="Đổi giao diện sáng/tối",
-                            on_click=lambda _e: (self.toggle_theme(), self._build_shell()),
-                        ),
-                        ft.OutlinedButton("Đổi mật khẩu", on_click=lambda _e: self.show_change_password()),
-                        ft.OutlinedButton("Đăng xuất", icon=ft.Icons.LOGOUT, on_click=lambda _e: self.show_role_selection()),
+                        kit.ghost_button("Đổi mật khẩu", icon=ft.Icons.KEY, on_click=lambda _e: self.show_change_password()),
+                        kit.ghost_button("Đăng xuất", icon=ft.Icons.LOGOUT, on_click=lambda _e: self.show_role_selection()),
                     ],
                 ),
             ],
         )
 
         self.content_switcher = content_switcher()
-        self.content_area = ft.Container(expand=True, padding=20, content=self.content_switcher)
+        self.content_area = ft.Container(expand=True, padding=24, content=self.content_switcher)
         self._render_content()
 
         layout = ft.Column(
@@ -429,15 +435,15 @@ class ScanBackupFletApp:
             controls=[
                 ft.Container(
                     content=top_bar,
-                    padding=ft.Padding.symmetric(vertical=16, horizontal=20),
-                    bgcolor=ft.Colors.SURFACE,
+                    padding=ft.Padding.symmetric(vertical=14, horizontal=20),
+                    bgcolor=SURFACE,
+                    border=ft.Border.only(bottom=ft.BorderSide(1, LINE)),
                 ),
                 ft.Row(
                     expand=True,
                     spacing=0,
                     controls=[
                         self.sidebar_container,
-                        ft.VerticalDivider(width=1),
                         self.content_area,
                     ],
                 ),

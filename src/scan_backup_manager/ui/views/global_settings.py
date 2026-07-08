@@ -4,68 +4,13 @@ import os
 
 import flet as ft
 
+from .. import kit
+from ..theme import TEXT_MUTED
 from ...i18n import SUPPORTED_LANGUAGES
-
-
-def _section(title: str, subtitle: str, content: ft.Control) -> ft.Control:
-    return ft.Container(
-        padding=20,
-        border_radius=14,
-        bgcolor=ft.Colors.SURFACE,
-        border=ft.Border.all(
-            1.4, ft.Colors.with_opacity(0.42, ft.Colors.PRIMARY)
-        ),
-        shadow=ft.BoxShadow(
-            blur_radius=14,
-            spread_radius=0,
-            color=ft.Colors.with_opacity(0.22, ft.Colors.BLACK),
-            offset=ft.Offset(0, 4),
-        ),
-        content=ft.Column(
-            spacing=14,
-            controls=[
-                ft.Row(
-                    spacing=10,
-                    controls=[
-                        ft.Container(
-                            width=4,
-                            height=38 if subtitle else 24,
-                            border_radius=4,
-                            bgcolor=ft.Colors.PRIMARY,
-                        ),
-                        ft.Column(
-                            spacing=2,
-                            controls=[
-                                ft.Text(title, size=16, weight=ft.FontWeight.BOLD),
-                                ft.Text(
-                                    subtitle,
-                                    size=12,
-                                    color=ft.Colors.ON_SURFACE_VARIANT,
-                                    visible=bool(subtitle),
-                                ),
-                            ],
-                        ),
-                    ],
-                ),
-                ft.Divider(height=1, color=ft.Colors.with_opacity(0.24, ft.Colors.PRIMARY)),
-                content,
-            ],
-        ),
-    )
 
 
 def build(shell) -> ft.Control:
     db = shell.state.db
-
-    theme_section = _section(
-        "Giao diện",
-        "Chuyển đổi giao diện sáng/tối cho toàn bộ ứng dụng.",
-        ft.FilledButton(
-            "Đổi sang giao diện " + ("sáng" if shell.state.theme_mode == "dark" else "tối"),
-            icon=ft.Icons.DARK_MODE if shell.state.theme_mode == "light" else ft.Icons.LIGHT_MODE,
-            on_click=lambda _e: (shell.toggle_theme(), shell.refresh_content()),
-        ),
-    )
 
     language_dropdown = ft.Dropdown(
         label="Ngôn ngữ",
@@ -80,10 +25,11 @@ def build(shell) -> ft.Control:
         db.set_setting("language", code)
         shell.page.update()
 
-    language_section = _section(
+    language_section = kit.section(
         "Ngôn ngữ",
         "Ngôn ngữ hiển thị của bảng điều khiển.",
-        ft.Row(controls=[language_dropdown, ft.FilledButton("Lưu", on_click=save_language)]),
+        ft.Row(controls=[language_dropdown, kit.primary_button("Lưu", on_click=save_language)]),
+        icon=ft.Icons.TRANSLATE,
     )
 
     settings = db.list_settings()
@@ -115,7 +61,7 @@ def build(shell) -> ft.Control:
         defaults_error.color = ft.Colors.PRIMARY
         shell.page.update()
 
-    defaults_section = _section(
+    defaults_section = kit.section(
         "Giá trị mặc định cho dự án mới",
         "Áp dụng khi tạo dự án mới; mỗi dự án vẫn có thể chỉnh riêng sau đó trong mục Cấu hình của dự án.",
         ft.Column(
@@ -124,9 +70,10 @@ def build(shell) -> ft.Control:
                 ft.Row(controls=[poll_field, stability_field]),
                 numeric_checkbox,
                 defaults_error,
-                ft.FilledButton("Lưu giá trị mặc định", on_click=save_defaults),
+                kit.primary_button("Lưu giá trị mặc định", on_click=save_defaults),
             ],
         ),
+        icon=ft.Icons.TUNE_OUTLINED,
     )
 
     backup_status = ft.Text("", color=ft.Colors.PRIMARY)
@@ -140,7 +87,7 @@ def build(shell) -> ft.Control:
     def open_db_folder(_event) -> None:
         os.startfile(shell.db.db_path.parent)  # noqa: S606 - desktop admin console, local folder only
 
-    backup_section = _section(
+    backup_section = kit.section(
         "Sao lưu / khôi phục CSDL",
         "Tạo bản sao lưu thủ công của toàn bộ cơ sở dữ liệu (tất cả dự án).",
         ft.Column(
@@ -148,23 +95,25 @@ def build(shell) -> ft.Control:
             controls=[
                 ft.Row(
                     controls=[
-                        ft.FilledButton("Sao lưu ngay", icon=ft.Icons.SAVE, on_click=backup_now),
-                        ft.OutlinedButton("Mở thư mục chứa CSDL", icon=ft.Icons.FOLDER_OPEN, on_click=open_db_folder),
+                        kit.primary_button("Sao lưu ngay", icon=ft.Icons.SAVE, on_click=backup_now),
+                        kit.ghost_button("Mở thư mục chứa CSDL", icon=ft.Icons.FOLDER_OPEN, on_click=open_db_folder),
                     ]
                 ),
                 backup_status,
             ],
         ),
+        icon=ft.Icons.STORAGE_OUTLINED,
     )
 
-    account_section = _section(
+    account_section = kit.section(
         "Tài khoản quản trị",
         "Đổi mật khẩu đăng nhập quản trị hệ thống.",
-        ft.FilledButton("Đổi mật khẩu", on_click=lambda _e: shell.show_change_password()),
+        kit.primary_button("Đổi mật khẩu", icon=ft.Icons.KEY, on_click=lambda _e: shell.show_change_password()),
+        icon=ft.Icons.SHIELD_OUTLINED,
     )
 
     heartbeat = db.latest_heartbeat()
-    scheduler_section = _section(
+    scheduler_section = kit.section(
         "Dịch vụ sao lưu tự động",
         "Dịch vụ Windows hoạt động độc lập với giao diện và xử lý các dự án theo chu kỳ riêng.",
         ft.Text(
@@ -172,12 +121,14 @@ def build(shell) -> ft.Control:
             else "Chưa nhận được tín hiệu từ dịch vụ.",
             color=ft.Colors.PRIMARY if heartbeat else ft.Colors.ERROR,
         ),
+        icon=ft.Icons.CLOUD_SYNC_OUTLINED,
     )
 
-    about_section = _section(
+    about_section = kit.section(
         "Thông tin ứng dụng",
         "",
-        ft.Text("Scan Backup Manager - phiên bản vận hành nội bộ", size=12, color=ft.Colors.ON_SURFACE_VARIANT),
+        ft.Text("Scan Backup Manager · phiên bản vận hành nội bộ", size=12, color=TEXT_MUTED),
+        icon=ft.Icons.INFO_OUTLINE,
     )
 
     return ft.Column(
@@ -185,14 +136,13 @@ def build(shell) -> ft.Control:
         spacing=16,
         scroll=ft.ScrollMode.AUTO,
         controls=[
-            ft.Text("Cấu hình / Cài đặt", size=22, weight=ft.FontWeight.BOLD),
-            ft.Text(
+            kit.page_header(
+                "Cấu hình / Cài đặt",
                 "Cấu hình áp dụng cho toàn hệ thống, không riêng một dự án nào.",
-                size=13, color=ft.Colors.ON_SURFACE_VARIANT,
+                eyebrow_text="Hệ thống",
             ),
             account_section,
             scheduler_section,
-            theme_section,
             language_section,
             defaults_section,
             backup_section,

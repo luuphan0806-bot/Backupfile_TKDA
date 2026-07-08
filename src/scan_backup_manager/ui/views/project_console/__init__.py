@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import flet as ft
 
-from ...theme import content_switcher
+from ... import kit
+from ...theme import LINE, content_switcher
 
 (
     TAB_DASHBOARD,
@@ -17,6 +18,13 @@ TAB_LABELS = [
     "Mapfile hệ thống",
     "Thống kê",
     "Cấu hình",
+]
+TAB_ICONS = [
+    ft.Icons.SPACE_DASHBOARD_OUTLINED,
+    ft.Icons.VIEW_LIST_OUTLINED,
+    ft.Icons.GRID_ON_OUTLINED,
+    ft.Icons.INSIGHTS_OUTLINED,
+    ft.Icons.TUNE_OUTLINED,
 ]
 
 
@@ -62,7 +70,7 @@ class ConsoleContext:
         self.root.controls = [
             self._build_header(),
             self._build_tab_bar(),
-            ft.Divider(height=1),
+            ft.Divider(height=1, color=LINE),
             self.content_container,
         ]
 
@@ -93,13 +101,14 @@ class ConsoleContext:
             controls=[
                 ft.Row(
                     spacing=12,
+                    vertical_alignment=ft.CrossAxisAlignment.CENTER,
                     controls=[
-                        ft.IconButton(icon=ft.Icons.ARROW_BACK, tooltip="Quay lại danh sách dự án", on_click=lambda _e: self.shell.close_project()),
+                        kit.ghost_button("Dự án", icon=ft.Icons.ARROW_BACK, on_click=lambda _e: self.shell.close_project()),
                         ft.Column(
-                            spacing=0,
+                            spacing=1,
                             controls=[
-                                ft.Text(name, size=18, weight=ft.FontWeight.BOLD),
-                                ft.Text(code, size=12, color=ft.Colors.ON_SURFACE_VARIANT),
+                                kit.eyebrow(code) if code else kit.eyebrow("Bảng điều khiển"),
+                                ft.Text(name, size=20, weight=ft.FontWeight.BOLD),
                             ],
                         ),
                     ],
@@ -108,13 +117,8 @@ class ConsoleContext:
         )
 
     def _build_tab_bar(self) -> ft.Control:
-        buttons = []
-        for index, label in enumerate(TAB_LABELS):
-            if index == self.tab_index:
-                buttons.append(ft.FilledButton(label, on_click=lambda _e, i=index: self.switch_tab(i)))
-            else:
-                buttons.append(ft.OutlinedButton(label, on_click=lambda _e, i=index: self.switch_tab(i)))
-        return ft.Row(spacing=8, wrap=True, controls=buttons)
+        items = list(zip(TAB_LABELS, TAB_ICONS))
+        return kit.tab_bar(items, self.tab_index, self.switch_tab)
 
 
 def build(shell, project_id: int) -> ft.Control:

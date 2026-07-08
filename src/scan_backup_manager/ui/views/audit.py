@@ -2,6 +2,9 @@ from __future__ import annotations
 
 import flet as ft
 
+from .. import kit
+from ..theme import TEXT_MUTED
+
 
 def build(shell) -> ft.Control:
     db = shell.state.db
@@ -26,7 +29,7 @@ def build(shell) -> ft.Control:
         ],
         rows=[],
     )
-    empty_text = ft.Text("Không có bản ghi nào khớp bộ lọc.", color=ft.Colors.ON_SURFACE_VARIANT, visible=False)
+    empty_text = ft.Text("Không có bản ghi nào khớp bộ lọc.", color=TEXT_MUTED, visible=False)
 
     project_names = {p.id: p.display_name for p in projects}
 
@@ -57,30 +60,34 @@ def build(shell) -> ft.Control:
 
     apply_filters()
 
-    filter_bar = ft.Row(
-        wrap=True,
-        spacing=10,
-        controls=[
-            project_dropdown, action_field, client_field, date_from_field, date_to_field,
-            ft.FilledButton("Lọc", icon=ft.Icons.SEARCH, on_click=apply_filters),
-        ],
+    filter_bar = kit.card(
+        ft.Row(
+            wrap=True,
+            spacing=10,
+            vertical_alignment=ft.CrossAxisAlignment.CENTER,
+            controls=[
+                project_dropdown, action_field, client_field, date_from_field, date_to_field,
+                kit.primary_button("Lọc", icon=ft.Icons.SEARCH, on_click=apply_filters),
+            ],
+        ),
+        padding=14,
     )
 
     return ft.Column(
         expand=True,
         spacing=16,
         controls=[
-            ft.Text("Nhật ký hệ thống", size=22, weight=ft.FontWeight.BOLD),
-            ft.Text(
+            kit.page_header(
+                "Nhật ký hệ thống",
                 "Toàn bộ hoạt động của hệ thống: backup, lỗi, xung đột, nhập mapfile, xuất báo cáo...",
-                size=13, color=ft.Colors.ON_SURFACE_VARIANT,
+                eyebrow_text="Giám sát",
             ),
             filter_bar,
             ft.Container(
                 expand=True,
                 content=ft.Column(
                     expand=True, scroll=ft.ScrollMode.AUTO,
-                    controls=[empty_text, results_table],
+                    controls=[empty_text, kit.table_frame(results_table)],
                 ),
             ),
         ],

@@ -3,7 +3,8 @@ from __future__ import annotations
 import flet as ft
 
 from ....models import DirectoryLevel
-from ...theme import LEVEL_LABELS
+from ... import kit
+from ...theme import LEVEL_LABELS, TEXT_MUTED
 
 
 def _normalize_value(level: DirectoryLevel, value: str) -> str:
@@ -37,7 +38,7 @@ def build(ctx) -> ft.Control:
             controls=[
                 ft.Text(
                     "Chưa có cây thư mục cho dự án. Vào Cấu hình > Dự án & cây thư mục để tạo các cấp trước.",
-                    color=ft.Colors.ON_SURFACE_VARIANT,
+                    color=TEXT_MUTED,
                 )
             ],
         )
@@ -97,17 +98,11 @@ def build(ctx) -> ft.Control:
         on_submit=add_value,
     )
 
-    level_buttons: list[ft.Control] = []
-    for index, level in enumerate(levels):
-        label = f"{index + 1}. {level.display_name}"
-        button_type = ft.FilledButton if index == selected_index else ft.OutlinedButton
-        level_buttons.append(
-            button_type(
-                label,
-                icon=ft.Icons.VIEW_COLUMN_OUTLINED,
-                on_click=lambda _event, selected=index: select_level(selected),
-            )
-        )
+    level_tabs = kit.tab_bar(
+        [(f"{index + 1}. {level.display_name}", ft.Icons.VIEW_COLUMN_OUTLINED) for index, level in enumerate(levels)],
+        selected_index,
+        select_level,
+    )
 
     summary_columns = [
         ft.DataColumn(ft.Text("#")),
@@ -155,44 +150,28 @@ def build(ctx) -> ft.Control:
         rows=value_rows,
     )
 
-    selected_panel = ft.Container(
-        padding=16,
-        border_radius=8,
-        bgcolor=ft.Colors.SURFACE,
-        border=ft.Border.all(1, ft.Colors.OUTLINE_VARIANT),
-        content=ft.Column(
+    selected_panel = kit.section(
+        selected_level.display_name,
+        LEVEL_LABELS.get(selected_level.validation_type, selected_level.validation_type),
+        ft.Column(
             spacing=12,
             controls=[
                 ft.Row(
-                    alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
-                    controls=[
-                        ft.Column(
-                            spacing=2,
-                            controls=[
-                                ft.Text(selected_level.display_name, size=16, weight=ft.FontWeight.BOLD),
-                                ft.Text(
-                                    LEVEL_LABELS.get(selected_level.validation_type, selected_level.validation_type),
-                                    size=12,
-                                    color=ft.Colors.ON_SURFACE_VARIANT,
-                                ),
-                            ],
-                        ),
-                    ],
-                ),
-                ft.Row(
                     wrap=True,
+                    vertical_alignment=ft.CrossAxisAlignment.CENTER,
                     controls=[
                         value_field,
-                        ft.FilledButton("Thêm danh mục", icon=ft.Icons.ADD, on_click=add_value),
+                        kit.primary_button("Thêm danh mục", icon=ft.Icons.ADD, on_click=add_value),
                     ],
                 ),
                 error_text,
-                values_table if value_rows else ft.Text(
+                kit.table_frame(values_table) if value_rows else ft.Text(
                     "Chưa có giá trị danh mục cho cấp này.",
-                    color=ft.Colors.ON_SURFACE_VARIANT,
+                    color=TEXT_MUTED,
                 ),
             ],
         ),
+        icon=ft.Icons.LABEL_OUTLINE,
     )
 
     return ft.Column(
@@ -204,15 +183,17 @@ def build(ctx) -> ft.Control:
                 "Quản lý danh mục hiển thị theo từng cấp trong cây thư mục của dự án. "
                 "Mỗi cấp tương ứng một cột hồ sơ; bấm vào cấp để tạo hoặc xóa giá trị danh mục.",
                 size=13,
-                color=ft.Colors.ON_SURFACE_VARIANT,
+                color=TEXT_MUTED,
             ),
-            ft.Row(spacing=8, wrap=True, controls=level_buttons),
+            level_tabs,
             ft.Row(
                 vertical_alignment=ft.CrossAxisAlignment.START,
                 controls=[
                     ft.Container(
                         expand=1,
-                        content=ft.DataTable(columns=summary_columns, rows=summary_rows),
+                        content=kit.table_frame(
+                            ft.DataTable(columns=summary_columns, rows=summary_rows)
+                        ),
                     ),
                     ft.Container(width=24),
                     ft.Container(expand=2, content=selected_panel),
