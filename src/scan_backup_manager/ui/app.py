@@ -6,11 +6,9 @@ from ..constants import APP_NAME, runtime_db_path
 from ..db import Database
 from ..logging_config import get_logger, setup_logging
 from . import kit
+from . import theme as ui_theme
 from .state import AppState
 from .theme import (
-    LINE,
-    PRIMARY_DARK,
-    SURFACE,
     TEXT_MUTED,
     apply_theme,
     background_gradient,
@@ -43,7 +41,8 @@ class ScanBackupFletApp:
         self.page.window.height = 860
         self.page.window.min_width = 1100
         self.page.window.min_height = 700
-        apply_theme(self.page)
+        apply_theme(self.page, self.state.theme_mode)
+        self.page.on_resize = self._on_page_resize
 
         get_logger().info("App started (db_path=%s)", self.db.db_path)
         self.show_role_selection()
@@ -55,9 +54,35 @@ class ScanBackupFletApp:
         """Every screen sits on the deep-space gradient plane."""
         self.page.controls.clear()
         self.page.controls.append(
-            ft.Container(expand=True, gradient=background_gradient(), content=control)
+            ft.Container(
+                expand=True,
+                gradient=background_gradient(self.state.theme_mode),
+                content=control,
+            )
         )
         self.page.update()
+
+    def _toggle_theme_mode(self, _event=None) -> None:
+        self.state.theme_mode = "light" if self.state.theme_mode == "dark" else "dark"
+        self.db.set_setting("theme_mode", self.state.theme_mode)
+        apply_theme(self.page, self.state.theme_mode)
+        if self.state.authenticated:
+            self._build_shell()
+        else:
+            self.show_role_selection()
+
+    def _theme_mode_button(self) -> ft.Control:
+        is_light = self.state.theme_mode == "light"
+        return kit.ghost_button(
+            "Chế độ sáng" if is_light else "Chế độ tối",
+            icon=ft.Icons.LIGHT_MODE if is_light else ft.Icons.DARK_MODE,
+            tooltip="Chuyển sang chế độ tối" if is_light else "Chuyển sang chế độ sáng",
+            on_click=self._toggle_theme_mode,
+        )
+
+    def _on_page_resize(self, _event=None) -> None:
+        if self.state.authenticated and hasattr(self, "content_switcher"):
+            self.refresh_content()
 
     def _auth_screen(self, card: ft.Control) -> ft.Control:
         return ft.Container(expand=True, alignment=ft.Alignment.CENTER, content=card)
@@ -107,7 +132,7 @@ class ScanBackupFletApp:
                     ),
                 ],
             ),
-            glow_color=PRIMARY_DARK,
+            glow_color=ui_theme.primary(),
             padding=48,
             radius=20,
         )
@@ -174,7 +199,7 @@ class ScanBackupFletApp:
                     ft.TextButton("Quay lại", on_click=lambda _e: self.show_role_selection()),
                 ],
             ),
-            glow_color=PRIMARY_DARK, padding=44, radius=20,
+            glow_color=ui_theme.primary(), padding=44, radius=20,
         )
         card.width = 460
         self.set_root(self._auth_screen(card))
@@ -260,8 +285,8 @@ class ScanBackupFletApp:
             controls=[
                 ft.Container(
                     padding=20,
-                    bgcolor=SURFACE,
-                    border=ft.Border.only(bottom=ft.BorderSide(1, LINE)),
+                    bgcolor=ui_theme.surface(),
+                    border=ft.Border.only(bottom=ft.BorderSide(1, ui_theme.line())),
                     content=ft.Row(
                         alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
                         vertical_alignment=ft.CrossAxisAlignment.CENTER,
@@ -320,7 +345,7 @@ class ScanBackupFletApp:
                     ft.TextButton("Quay lại", on_click=lambda _e: self.show_role_selection()),
                 ],
             ),
-            glow_color=PRIMARY_DARK, padding=44, radius=20,
+            glow_color=ui_theme.primary(), padding=44, radius=20,
         )
         card.width = 460
         self.set_root(self._auth_screen(card))
@@ -372,7 +397,7 @@ class ScanBackupFletApp:
         self.sidebar_collapsed = self.current_project_id is not None
         self.sidebar_toggle = ft.IconButton(
             icon=ft.Icons.MENU if self.sidebar_collapsed else ft.Icons.MENU_OPEN,
-            icon_color=PRIMARY_DARK,
+            icon_color=ui_theme.primary(),
             tooltip="Mở rộng menu" if self.sidebar_collapsed else "Thu gọn menu",
             on_click=lambda _e: self._set_sidebar_collapsed(not self.sidebar_collapsed),
         )
@@ -383,9 +408,9 @@ class ScanBackupFletApp:
             min_width=72,
             min_extended_width=220,
             bgcolor=ft.Colors.TRANSPARENT,
-            indicator_color=ft.Colors.with_opacity(0.16, PRIMARY_DARK),
-            selected_label_text_style=ft.TextStyle(color=PRIMARY_DARK, weight=ft.FontWeight.BOLD),
-            unselected_label_text_style=ft.TextStyle(color=TEXT_MUTED),
+            indicator_color=ft.Colors.with_opacity(0.16, ui_theme.primary()),
+            selected_label_text_style=ft.TextStyle(color=ui_theme.primary(), weight=ft.FontWeight.BOLD),
+            unselected_label_text_style=ft.TextStyle(color=ui_theme.text_muted()),
             leading=self.sidebar_toggle,
             destinations=[
                 ft.NavigationRailDestination(icon=ft.Icons.SPACE_DASHBOARD_OUTLINED, selected_icon=ft.Icons.SPACE_DASHBOARD, label="Tổng Quan"),
@@ -399,8 +424,8 @@ class ScanBackupFletApp:
         self.sidebar_container = ft.Container(
             width=72 if self.sidebar_collapsed else 220,
             clip_behavior=ft.ClipBehavior.HARD_EDGE,
-            bgcolor=SURFACE,
-            border=ft.Border.only(right=ft.BorderSide(1, LINE)),
+            bgcolor=ui_theme.surface(),
+            border=ft.Border.only(right=ft.BorderSide(1, ui_theme.line())),
             content=rail,
         )
 
@@ -418,6 +443,7 @@ class ScanBackupFletApp:
                 ft.Row(
                     spacing=8,
                     controls=[
+                        self._theme_mode_button(),
                         kit.ghost_button("Đổi mật khẩu", icon=ft.Icons.KEY, on_click=lambda _e: self.show_change_password()),
                         kit.ghost_button("Đăng xuất", icon=ft.Icons.LOGOUT, on_click=lambda _e: self.show_role_selection()),
                     ],
@@ -436,8 +462,8 @@ class ScanBackupFletApp:
                 ft.Container(
                     content=top_bar,
                     padding=ft.Padding.symmetric(vertical=14, horizontal=20),
-                    bgcolor=SURFACE,
-                    border=ft.Border.only(bottom=ft.BorderSide(1, LINE)),
+                    bgcolor=ui_theme.surface(),
+                    border=ft.Border.only(bottom=ft.BorderSide(1, ui_theme.line())),
                 ),
                 ft.Row(
                     expand=True,

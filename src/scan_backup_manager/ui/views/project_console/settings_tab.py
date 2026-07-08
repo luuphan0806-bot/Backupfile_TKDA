@@ -8,6 +8,7 @@ from ....config_excel import ConfigExcelService
 from ....models import (
     Client,
     DirectoryLevel,
+    JobType,
     MapfileProfile,
     PaperFormat,
     Personnel,
@@ -483,6 +484,78 @@ def _build_operations_section(ctx) -> ft.Control:
     )
 
 
+def _build_job_types_section(ctx) -> ft.Control:
+    db = ctx.db
+    job_types = db.list_job_types(ctx.project_id)
+    status_text = ft.Text("", color=ft.Colors.PRIMARY)
+    rows: list[ft.DataRow] = []
+
+    def save_job(item: JobType, name_field: ft.TextField, enabled_field: ft.Checkbox) -> None:
+        try:
+            db.save_job_type(
+                JobType(
+                    item.id,
+                    item.project_id,
+                    item.job_code,
+                    name_field.value or "",
+                    bool(enabled_field.value),
+                    item.sort_order,
+                )
+            )
+        except ValueError as exc:
+            status_text.value = str(exc)
+            status_text.color = ft.Colors.ERROR
+            ctx.page.update()
+            return
+        status_text.value = "Đã lưu cấu hình công việc."
+        status_text.color = ft.Colors.PRIMARY
+        ctx.refresh()
+
+    for item in job_types:
+        name_field = ft.TextField(value=item.display_name, dense=True, width=260)
+        enabled_field = ft.Checkbox(value=item.enabled)
+        rows.append(
+            ft.DataRow(
+                cells=[
+                    ft.DataCell(ft.Text(item.job_code, weight=ft.FontWeight.BOLD)),
+                    ft.DataCell(name_field),
+                    ft.DataCell(enabled_field),
+                    ft.DataCell(
+                        ft.IconButton(
+                            icon=ft.Icons.SAVE_OUTLINED,
+                            tooltip="Lưu công việc",
+                            on_click=lambda _e, current=item, field=name_field, enabled=enabled_field: save_job(
+                                current, field, enabled
+                            ),
+                        )
+                    ),
+                ]
+            )
+        )
+
+    table = ft.DataTable(
+        columns=[
+            ft.DataColumn(ft.Text("Mã công việc")),
+            ft.DataColumn(ft.Text("Tên hiển thị")),
+            ft.DataColumn(ft.Text("Áp dụng")),
+            ft.DataColumn(ft.Text("")),
+        ],
+        rows=rows,
+    )
+
+    return kit.section(
+        "Cấu hình công việc",
+        "Admin có thể đổi tên các công việc xuất hiện khi tạo dòng hồ sơ mới.",
+        ft.Column(
+            spacing=10,
+            controls=[
+                status_text,
+                kit.table_frame(table),
+            ],
+        ),
+    )
+
+
 def build(ctx) -> ft.Control:
     state = ctx.view_state.setdefault("settings", {"tab": 0})
     tab_items = [
@@ -491,6 +564,7 @@ def build(ctx) -> ft.Control:
         ("Khổ giấy", ft.Icons.DESCRIPTION_OUTLINED, _build_paper_formats_section),
         ("Máy trạm", ft.Icons.COMPUTER_OUTLINED, _build_clients_section),
         ("Nhân sự", ft.Icons.GROUP_OUTLINED, _build_personnel_section),
+        ("Công việc", ft.Icons.ASSIGNMENT_OUTLINED, _build_job_types_section),
         ("Vận hành", ft.Icons.TUNE_OUTLINED, _build_operations_section),
     ]
 

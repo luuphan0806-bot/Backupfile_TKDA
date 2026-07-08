@@ -72,6 +72,16 @@ class PaperFormat:
 
 
 @dataclass(slots=True)
+class JobType:
+    id: int | None
+    project_id: int
+    job_code: str
+    display_name: str
+    enabled: bool = True
+    sort_order: int = 0
+
+
+@dataclass(slots=True)
 class ProjectTask:
     id: int | None
     project_id: int

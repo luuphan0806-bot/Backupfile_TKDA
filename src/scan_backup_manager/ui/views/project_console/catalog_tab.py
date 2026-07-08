@@ -30,6 +30,7 @@ def build(ctx) -> ft.Control:
     state = ctx.view_state.setdefault("catalog", {"selected_index": 0})
     levels = db.list_directory_levels(ctx.project_id)
     error_text = ft.Text("", color=ft.Colors.ERROR)
+    status_text = ft.Text("", color=ft.Colors.PRIMARY)
 
     if not levels:
         return ft.Column(
@@ -55,19 +56,33 @@ def build(ctx) -> ft.Control:
         state["selected_index"] = index
         ctx.refresh()
 
-    def add_value(_event) -> None:
+    def parse_values(raw: str) -> list[str]:
+        values: list[str] = []
+        seen: set[str] = set()
+        for line in raw.replace("\r\n", "\n").replace("\r", "\n").split("\n"):
+            if not line.strip():
+                continue
+            clean = _validate_value(selected_level, line)
+            if clean in seen:
+                continue
+            seen.add(clean)
+            values.append(clean)
+        return values
+
+    def save_values(_event=None) -> None:
         try:
-            clean = _validate_value(selected_level, value_field.value or "")
+            values = parse_values(values_field.value or "")
         except ValueError as exc:
             error_text.value = str(exc)
+            status_text.value = ""
             ctx.page.update()
             return
-        if clean in selected_level.allowed_values:
-            error_text.value = "Giá trị này đã tồn tại."
+        if not values:
+            error_text.value = "Cần nhập ít nhất một giá trị danh mục."
+            status_text.value = ""
             ctx.page.update()
             return
         next_levels = list(levels)
-        values = [*selected_level.allowed_values, clean]
         next_levels[selected_index] = DirectoryLevel(
             selected_level.id,
             selected_level.project_id,
@@ -76,78 +91,61 @@ def build(ctx) -> ft.Control:
             selected_level.validation_type,
             values,
         )
+        error_text.value = ""
+        status_text.value = f"Đã lưu {len(values)} giá trị cho {selected_level.display_name}."
         save_levels(next_levels)
 
-    def delete_value(value: str) -> None:
-        next_levels = list(levels)
-        values = [item for item in selected_level.allowed_values if item != value]
-        next_levels[selected_index] = DirectoryLevel(
-            selected_level.id,
-            selected_level.project_id,
-            selected_level.position,
-            selected_level.display_name,
-            selected_level.validation_type,
-            values,
-        )
-        save_levels(next_levels)
-
-    value_field = ft.TextField(
-        label=f"Thêm giá trị cho {selected_level.display_name}",
-        width=300,
-        dense=True,
-        on_submit=add_value,
+    values_field = ft.TextField(
+        label=f"Giá trị của {selected_level.display_name}",
+        value="\n".join(selected_level.allowed_values),
+        multiline=True,
+        min_lines=14,
+        max_lines=24,
+        expand=True,
+        hint_text="Dán từ Excel: mỗi giá trị một dòng",
     )
 
-    level_tabs = kit.tab_bar(
-        [(f"{index + 1}. {level.display_name}", ft.Icons.VIEW_COLUMN_OUTLINED) for index, level in enumerate(levels)],
-        selected_index,
-        select_level,
-    )
-
-    summary_columns = [
-        ft.DataColumn(ft.Text("#")),
-        ft.DataColumn(ft.Text("Cấp thư mục")),
-        ft.DataColumn(ft.Text("Kiểu")),
-        ft.DataColumn(ft.Text("Số danh mục")),
-    ]
-    summary_rows = [
-        ft.DataRow(
-            selected=index == selected_index,
-            on_select_change=lambda _event, selected=index: select_level(selected),
-            cells=[
-                ft.DataCell(ft.Text(str(index + 1))),
-                ft.DataCell(ft.Text(level.display_name, weight=ft.FontWeight.BOLD)),
-                ft.DataCell(ft.Text(LEVEL_LABELS.get(level.validation_type, level.validation_type))),
-                ft.DataCell(ft.Text(str(len(level.allowed_values)))),
-            ],
+    level_cards = [
+        ft.Container(
+            padding=12,
+            border_radius=8,
+            bgcolor=ft.Colors.with_opacity(
+                0.14 if index == selected_index else 0.04, ft.Colors.PRIMARY
+            ),
+            border=ft.Border.all(
+                1,
+                ft.Colors.with_opacity(
+                    0.55 if index == selected_index else 0.18, ft.Colors.PRIMARY
+                ),
+            ),
+            on_click=lambda _event, selected=index: select_level(selected),
+            content=ft.Row(
+                alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
+                vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                controls=[
+                    ft.Column(
+                        spacing=2,
+                        controls=[
+                            ft.Text(level.display_name, weight=ft.FontWeight.BOLD),
+                            ft.Text(
+                                LEVEL_LABELS.get(level.validation_type, level.validation_type),
+                                size=12,
+                                color=TEXT_MUTED,
+                            ),
+                        ],
+                    ),
+                    kit.badge(str(len(level.allowed_values)), ft.Colors.PRIMARY),
+                ],
+            ),
         )
         for index, level in enumerate(levels)
     ]
 
-    value_rows = [
-        ft.DataRow(
-            cells=[
-                ft.DataCell(ft.Text(str(index + 1))),
-                ft.DataCell(ft.Text(value)),
-                ft.DataCell(
-                    ft.IconButton(
-                        icon=ft.Icons.DELETE_OUTLINE,
-                        tooltip="Xóa giá trị",
-                        on_click=lambda _event, current=value: delete_value(current),
-                    )
-                ),
-            ],
-        )
-        for index, value in enumerate(selected_level.allowed_values)
-    ]
-
-    values_table = ft.DataTable(
-        columns=[
-            ft.DataColumn(ft.Text("#")),
-            ft.DataColumn(ft.Text(selected_level.display_name)),
-            ft.DataColumn(ft.Text("")),
-        ],
-        rows=value_rows,
+    level_list = kit.section(
+        "Danh sách các loại danh mục",
+        "Chọn một loại để sửa danh sách giá trị",
+        ft.Column(spacing=8, controls=level_cards),
+        icon=ft.Icons.VIEW_LIST_OUTLINED,
     )
 
     selected_panel = kit.section(
@@ -157,18 +155,16 @@ def build(ctx) -> ft.Control:
             spacing=12,
             controls=[
                 ft.Row(
-                    wrap=True,
+                    alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
                     vertical_alignment=ft.CrossAxisAlignment.CENTER,
                     controls=[
-                        value_field,
-                        kit.primary_button("Thêm danh mục", icon=ft.Icons.ADD, on_click=add_value),
+                        ft.Text(f"{len(selected_level.allowed_values)} giá trị", color=TEXT_MUTED),
+                        kit.primary_button("Lưu danh mục", icon=ft.Icons.SAVE, on_click=save_values),
                     ],
                 ),
+                values_field,
                 error_text,
-                kit.table_frame(values_table) if value_rows else ft.Text(
-                    "Chưa có giá trị danh mục cho cấp này.",
-                    color=TEXT_MUTED,
-                ),
+                status_text,
             ],
         ),
         icon=ft.Icons.LABEL_OUTLINE,
@@ -181,21 +177,14 @@ def build(ctx) -> ft.Control:
         controls=[
             ft.Text(
                 "Quản lý danh mục hiển thị theo từng cấp trong cây thư mục của dự án. "
-                "Mỗi cấp tương ứng một cột hồ sơ; bấm vào cấp để tạo hoặc xóa giá trị danh mục.",
+                "Mỗi cấp tương ứng một cột hồ sơ; bấm vào cấp để sửa nhanh danh sách giá trị.",
                 size=13,
                 color=TEXT_MUTED,
             ),
-            level_tabs,
             ft.Row(
                 vertical_alignment=ft.CrossAxisAlignment.START,
                 controls=[
-                    ft.Container(
-                        expand=1,
-                        content=kit.table_frame(
-                            ft.DataTable(columns=summary_columns, rows=summary_rows)
-                        ),
-                    ),
-                    ft.Container(width=24),
+                    ft.Container(expand=1, content=level_list),
                     ft.Container(expand=2, content=selected_panel),
                 ],
             ),

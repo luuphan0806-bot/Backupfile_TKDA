@@ -111,6 +111,7 @@ def test_record_workflow_tracks_paper_sizes_and_requires_a3_confirmation(
             "scan_date": "2026-07-06",
             "scan_status": "SCANNED",
             "scan_pages": 12,
+            "scan_files": 3,
             "check_pages": 0,
             "notes": "",
         },
@@ -153,6 +154,7 @@ def test_record_workflow_tracks_paper_sizes_and_requires_a3_confirmation(
     assert records[0]["check_pages"] == 12
     assert records[0]["backup_status"] == "BACKED_UP"
     assert records[0]["paper_statuses"]["A4"]["scan_pages"] == 12
+    assert records[0]["paper_statuses"]["A4"]["scan_files"] == 3
     assert records[0]["paper_statuses"]["A4"]["scanner_id"] == scanner_id
     assert records[0]["paper_statuses"]["A3"]["scan_status"] == "UNKNOWN"
     assert records[0]["paper_statuses"]["A0"]["scan_status"] == "UNKNOWN"

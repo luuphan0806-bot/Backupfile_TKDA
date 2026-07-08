@@ -3,7 +3,7 @@ from __future__ import annotations
 import flet as ft
 
 # ---------------------------------------------------------------------------
-# Cyan cyberpunk design system -- dark only.
+# Cyan cyberpunk design system.
 #
 # The whole app renders on one deep-space plane with electric-cyan accents.
 # Every hue below was picked for an "hologram on deep space" mood and the four
@@ -15,6 +15,7 @@ import flet as ft
 
 PRIMARY = "#3D5AFE"          # legacy light seed (kept for reference)
 PRIMARY_DARK = "#22E1FF"     # THE cyan glow accent -- primary throughout
+PRIMARY_LIGHT = "#2563EB"    # light-mode accent with stronger white contrast
 ACCENT = "#8B6CFF"           # neon violet, for gradients/hero accents
 ACCENT_2 = "#FF4D9D"         # neon magenta, sparing secondary accent
 
@@ -42,8 +43,66 @@ LINE_STRONG = ft.Colors.with_opacity(0.55, PRIMARY_DARK)
 GLOW_CYAN = ft.Colors.with_opacity(0.35, PRIMARY_DARK)
 
 
-def background_gradient() -> ft.LinearGradient:
+LIGHT_BG_BASE = "#F6F8FC"
+LIGHT_BG_GRADIENT_TOP = "#EAF6FF"
+LIGHT_SURFACE = "#FFFFFF"
+LIGHT_SURFACE_HIGH = "#EEF4FB"
+LIGHT_SURFACE_INPUT = "#F8FAFC"
+LIGHT_TEXT_PRIMARY = "#172033"
+LIGHT_TEXT_MUTED = "#5D6678"
+
+CURRENT_MODE = "dark"
+
+
+def is_light_mode() -> bool:
+    return CURRENT_MODE == "light"
+
+
+def primary() -> str:
+    return PRIMARY_LIGHT if is_light_mode() else PRIMARY_DARK
+
+
+def bg_base() -> str:
+    return LIGHT_BG_BASE if is_light_mode() else BG_BASE
+
+
+def surface() -> str:
+    return LIGHT_SURFACE if is_light_mode() else SURFACE
+
+
+def surface_high() -> str:
+    return LIGHT_SURFACE_HIGH if is_light_mode() else SURFACE_HIGH
+
+
+def surface_input() -> str:
+    return LIGHT_SURFACE_INPUT if is_light_mode() else SURFACE_INPUT
+
+
+def text_primary() -> str:
+    return LIGHT_TEXT_PRIMARY if is_light_mode() else TEXT_PRIMARY
+
+
+def text_muted() -> str:
+    return LIGHT_TEXT_MUTED if is_light_mode() else TEXT_MUTED
+
+
+def line() -> str:
+    return ft.Colors.with_opacity(0.24 if is_light_mode() else 0.20, primary())
+
+
+def line_strong() -> str:
+    return ft.Colors.with_opacity(0.50 if is_light_mode() else 0.55, primary())
+
+
+def background_gradient(mode: str = "dark") -> ft.LinearGradient:
     """The deep-space plane every full-screen surface sits on."""
+    if mode == "light":
+        return ft.LinearGradient(
+            begin=ft.Alignment.TOP_LEFT,
+            end=ft.Alignment.BOTTOM_RIGHT,
+            colors=[LIGHT_BG_GRADIENT_TOP, LIGHT_BG_BASE, LIGHT_BG_BASE],
+            stops=[0.0, 0.55, 1.0],
+        )
     return ft.LinearGradient(
         begin=ft.Alignment.TOP_LEFT,
         end=ft.Alignment.BOTTOM_RIGHT,
@@ -74,19 +133,22 @@ def scrollable_table(table: ft.Control) -> ft.Control:
 
 def build_theme() -> ft.Theme:
     return ft.Theme(
-        color_scheme_seed=PRIMARY_DARK,
+        color_scheme_seed=primary(),
         font_family="Segoe UI",
         visual_density=ft.VisualDensity.COMPACT,
     )
 
 
-def apply_theme(page: ft.Page) -> None:
-    """Dark-only cyberpunk theme. No light variant."""
-    page.theme_mode = ft.ThemeMode.DARK
+def apply_theme(page: ft.Page, mode: str = "dark") -> None:
+    """Apply the persisted display mode."""
+    global CURRENT_MODE
+    normalized = "light" if mode == "light" else "dark"
+    CURRENT_MODE = normalized
+    page.theme_mode = ft.ThemeMode.LIGHT if normalized == "light" else ft.ThemeMode.DARK
     page.theme = build_theme()
     page.dark_theme = build_theme()
     page.padding = 0
-    page.bgcolor = BG_BASE
+    page.bgcolor = LIGHT_BG_BASE if normalized == "light" else BG_BASE
 
 
 def status_color(status: str) -> str:

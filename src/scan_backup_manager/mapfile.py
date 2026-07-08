@@ -301,6 +301,7 @@ class MapfileService:
                         "scan_date": paper.get("scan_date", ""),
                         "scan_status": paper["scan_status"],
                         "scan_pages": str(paper["scan_pages"]),
+                        "scan_files": str(paper.get("scan_files", 0)),
                         "check_pages": str(paper["check_pages"]),
                         "notes": paper["notes"],
                     }

@@ -7,7 +7,8 @@ import pytest
 from openpyxl import load_workbook
 
 from scan_backup_manager.db import DEFAULT_ADMIN_PASSWORD, Database
-from scan_backup_manager.models import DirectoryLevel, Personnel, Project, ProjectTask
+from scan_backup_manager.mapfile import MapfileService
+from scan_backup_manager.models import Client, DirectoryLevel, JobType, Personnel, Project, ProjectTask
 from scan_backup_manager.reports import ReportService
 
 
@@ -323,3 +324,55 @@ def test_report_contains_project_personnel_and_tasks(tmp_path: Path) -> None:
     workbook = load_workbook(report, read_only=True)
 
     assert {"Summary", "Personnel", "Tasks"}.issubset(workbook.sheetnames)
+
+
+def test_project_job_types_can_be_renamed_and_used_for_manual_work(tmp_path: Path) -> None:
+    db = Database(tmp_path / "app.sqlite3")
+    project = configure_project(db, tmp_path)
+    job_types = db.list_job_types(project.id or 0)
+    assert [item.display_name for item in job_types] == [
+        "Scan A4",
+        "Scan A3 (mới)",
+        "Scan A3 (cũ)",
+        "Scan A0",
+        "Check Scan",
+    ]
+    scan_a4 = next(item for item in job_types if item.job_code == "SCAN_A4")
+
+    db.save_job_type(
+        JobType(
+            scan_a4.id,
+            project.id or 0,
+            "SCAN_A4",
+            "Quét hồ sơ A4",
+            True,
+            scan_a4.sort_order,
+        )
+    )
+    renamed = next(item for item in db.list_job_types(project.id or 0) if item.job_code == "SCAN_A4")
+    assert renamed.display_name == "Quét hồ sơ A4"
+
+    share = tmp_path / "share"
+    db.save_client(Client(None, project.id or 0, "SCAN01", "", str(share), True))
+    personnel_id = db.save_personnel(
+        Personnel(None, project.id or 0, "NV01", "Nguyen Van A", "Scanner", True)
+    )
+    row_id = MapfileService(db).add_manual_record(
+        project.id or 0,
+        ["2026", "100", "DOC", "A-001"],
+        client_code="SCAN01",
+    )
+    task_id = db.save_task(
+        ProjectTask(
+            None,
+            project.id or 0,
+            "SCAN_A4_2026_100_DOC_A_001",
+            renamed.display_name,
+            f"Dòng mapfile: {row_id}",
+            personnel_id,
+            "",
+        )
+    )
+
+    assert task_id > 0
+    assert (share / project.project_code / "2026" / "100" / "DOC" / "A-001").is_dir()

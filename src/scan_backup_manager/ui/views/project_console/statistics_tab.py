@@ -6,6 +6,7 @@ import flet as ft
 import flet_charts as fc
 
 from ... import kit
+from ...date_format import DISPLAY_DATE_HINT, display_to_iso, iso_to_display
 from ...theme import ACCENT_2, DANGER, INFO, PRIMARY_DARK, SUCCESS, WARNING, TEXT_MUTED
 from ...workers import run_worker
 
@@ -35,8 +36,8 @@ def build(ctx) -> ft.Control:
     default_from = (today - timedelta(days=30)).isoformat()
     default_to = today.isoformat()
 
-    date_from_field = ft.TextField(label="Từ ngày", width=160, value=default_from, hint_text="YYYY-MM-DD")
-    date_to_field = ft.TextField(label="Đến ngày", width=160, value=default_to, hint_text="YYYY-MM-DD")
+    date_from_field = ft.TextField(label="Từ ngày", width=160, value=iso_to_display(default_from), hint_text=DISPLAY_DATE_HINT)
+    date_to_field = ft.TextField(label="Đến ngày", width=160, value=iso_to_display(default_to), hint_text=DISPLAY_DATE_HINT)
     status_text = ft.Text("", color=ft.Colors.PRIMARY)
     results_container = ft.Container(expand=True)
 
@@ -148,7 +149,15 @@ def build(ctx) -> ft.Control:
         ctx.page.update()
 
     def apply_range(_event=None) -> None:
-        render_results(date_from_field.value or default_from, date_to_field.value or default_to)
+        try:
+            date_from = display_to_iso(date_from_field.value or iso_to_display(default_from))
+            date_to = display_to_iso(date_to_field.value or iso_to_display(default_to))
+        except ValueError as exc:
+            status_text.value = str(exc)
+            status_text.color = ft.Colors.ERROR
+            ctx.page.update()
+            return
+        render_results(date_from, date_to)
 
     filter_bar = kit.card(
         ft.Row(

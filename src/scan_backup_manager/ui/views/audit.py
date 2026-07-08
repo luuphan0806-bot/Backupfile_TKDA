@@ -3,6 +3,7 @@ from __future__ import annotations
 import flet as ft
 
 from .. import kit
+from ..date_format import DISPLAY_DATE_HINT, display_to_iso, iso_datetime_to_display
 from ..theme import TEXT_MUTED
 
 
@@ -16,8 +17,8 @@ def build(shell) -> ft.Control:
     project_dropdown = ft.Dropdown(label="Dự án", width=220, value="", options=project_options)
     action_field = ft.TextField(label="Hành động", width=200, hint_text="VD: COPIED, ERROR")
     client_field = ft.TextField(label="Máy trạm", width=160)
-    date_from_field = ft.TextField(label="Từ ngày", width=160, hint_text="YYYY-MM-DD")
-    date_to_field = ft.TextField(label="Đến ngày", width=160, hint_text="YYYY-MM-DD")
+    date_from_field = ft.TextField(label="Từ ngày", width=160, hint_text=DISPLAY_DATE_HINT)
+    date_to_field = ft.TextField(label="Đến ngày", width=160, hint_text=DISPLAY_DATE_HINT)
 
     results_table = ft.DataTable(
         columns=[
@@ -35,18 +36,26 @@ def build(shell) -> ft.Control:
 
     def apply_filters(_event=None) -> None:
         project_id = int(project_dropdown.value) if project_dropdown.value else None
+        try:
+            date_from = display_to_iso(date_from_field.value) if date_from_field.value else None
+            date_to = display_to_iso(date_to_field.value) if date_to_field.value else None
+        except ValueError:
+            empty_text.value = f"Ngày lọc phải có định dạng {DISPLAY_DATE_HINT}."
+            empty_text.visible = True
+            shell.page.update()
+            return
         rows = db.list_audit_logs(
             project_id=project_id,
             action=(action_field.value or "").strip() or None,
-            date_from=(date_from_field.value or "").strip() or None,
-            date_to=((date_to_field.value or "").strip() + "T23:59:59") if date_to_field.value else None,
+            date_from=date_from,
+            date_to=(date_to + "T23:59:59") if date_to else None,
             client_code=(client_field.value or "").strip() or None,
             limit=500,
         )
         results_table.rows = [
             ft.DataRow(
                 cells=[
-                    ft.DataCell(ft.Text(row["created_at"])),
+                    ft.DataCell(ft.Text(iso_datetime_to_display(row["created_at"]))),
                     ft.DataCell(ft.Text(project_names.get(row["project_id"], "-"))),
                     ft.DataCell(ft.Text(row["action"])),
                     ft.DataCell(ft.Text(row["client_code"] or "")),

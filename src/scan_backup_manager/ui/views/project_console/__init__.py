@@ -3,7 +3,8 @@ from __future__ import annotations
 import flet as ft
 
 from ... import kit
-from ...theme import LINE, content_switcher
+from ... import theme as ui_theme
+from ...theme import content_switcher
 
 (
     TAB_DASHBOARD,
@@ -70,7 +71,7 @@ class ConsoleContext:
         self.root.controls = [
             self._build_header(),
             self._build_tab_bar(),
-            ft.Divider(height=1, color=LINE),
+            ft.Divider(height=1, color=ui_theme.line()),
             self.content_container,
         ]
 

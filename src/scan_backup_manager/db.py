@@ -17,6 +17,7 @@ from .models import (
     DirectoryLevel,
     MapfileProfile,
     PaperFormat,
+    JobType,
     Personnel,
     Project,
     ProjectSettings,
@@ -53,6 +54,18 @@ RECORD_WORKFLOW_STATUSES = {
 
 def utc_now() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+
+
+def normalize_system_date(value: str, label: str) -> str:
+    text = value.strip()
+    if not text:
+        return ""
+    for fmt in ("%d/%m/%Y", "%Y-%m-%d"):
+        try:
+            return datetime.strptime(text[:10], fmt).strftime("%Y-%m-%d")
+        except ValueError:
+            continue
+    raise ValueError(f"{label} phải có định dạng dd/mm/yyyy.")
 
 
 def record_key_from_relative_path(relative_path: str) -> str:
@@ -286,6 +299,19 @@ class Database:
                 UNIQUE(project_id, code)
             );
 
+            CREATE TABLE IF NOT EXISTS project_job_types(
+                id INTEGER PRIMARY KEY,
+                project_id INTEGER NOT NULL,
+                job_code TEXT NOT NULL,
+                display_name TEXT NOT NULL,
+                enabled INTEGER NOT NULL DEFAULT 1,
+                sort_order INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                FOREIGN KEY(project_id) REFERENCES projects(id) ON DELETE CASCADE,
+                UNIQUE(project_id, job_code)
+            );
+
             CREATE TABLE IF NOT EXISTS record_workflows(
                 id INTEGER PRIMARY KEY,
                 project_id INTEGER NOT NULL,
@@ -313,6 +339,7 @@ class Database:
                 scan_date TEXT NOT NULL DEFAULT '',
                 scan_status TEXT NOT NULL DEFAULT 'UNKNOWN',
                 scan_pages INTEGER NOT NULL DEFAULT 0,
+                scan_files INTEGER NOT NULL DEFAULT 0,
                 check_pages INTEGER NOT NULL DEFAULT 0,
                 notes TEXT NOT NULL DEFAULT '',
                 updated_at TEXT NOT NULL,
@@ -638,12 +665,31 @@ class Database:
             conn.execute("ALTER TABLE record_paper_statuses ADD COLUMN scanner_id INTEGER")
         if "scan_date" not in paper_columns:
             conn.execute("ALTER TABLE record_paper_statuses ADD COLUMN scan_date TEXT NOT NULL DEFAULT ''")
+        if "scan_files" not in paper_columns:
+            conn.execute("ALTER TABLE record_paper_statuses ADD COLUMN scan_files INTEGER NOT NULL DEFAULT 0")
         workflow_columns = {
             row[1] for row in conn.execute("PRAGMA table_info(record_workflows)").fetchall()
         }
         if "check_pages" not in workflow_columns:
             conn.execute("ALTER TABLE record_workflows ADD COLUMN check_pages INTEGER NOT NULL DEFAULT 0")
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS project_job_types(
+                id INTEGER PRIMARY KEY,
+                project_id INTEGER NOT NULL,
+                job_code TEXT NOT NULL,
+                display_name TEXT NOT NULL,
+                enabled INTEGER NOT NULL DEFAULT 1,
+                sort_order INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                FOREIGN KEY(project_id) REFERENCES projects(id) ON DELETE CASCADE,
+                UNIQUE(project_id, job_code)
+            )
+            """
+        )
         self._seed_paper_formats(conn)
+        self._seed_job_types(conn)
 
     @staticmethod
     def _seed_paper_formats(
@@ -671,6 +717,51 @@ class Database:
                     """,
                     (current_project_id, code, name, order, now, now),
                 )
+
+    @staticmethod
+    def _seed_job_types(
+        conn: sqlite3.Connection, project_id: int | None = None
+    ) -> None:
+        if project_id is None:
+            project_ids = [
+                int(row["id"]) for row in conn.execute("SELECT id FROM projects")
+            ]
+        else:
+            project_ids = [project_id]
+        now = utc_now()
+        for current_project_id in project_ids:
+            for code, name, order in (
+                ("SCAN_A4", "Scan A4", 10),
+                ("SCAN_A3", "Scan A3 (mới)", 20),
+                ("SCAN_A3_OLD", "Scan A3 (cũ)", 30),
+                ("SCAN_A0", "Scan A0", 40),
+                ("CHECK", "Check Scan", 50),
+            ):
+                conn.execute(
+                    """
+                    INSERT OR IGNORE INTO project_job_types(
+                        project_id, job_code, display_name, enabled,
+                        sort_order, created_at, updated_at
+                    ) VALUES(?, ?, ?, 1, ?, ?, ?)
+                    """,
+                    (current_project_id, code, name, order, now, now),
+                )
+            conn.execute(
+                """
+                UPDATE project_job_types
+                SET display_name='Scan A3 (mới)', updated_at=?
+                WHERE project_id=? AND job_code='SCAN_A3' AND display_name='Scan A3'
+                """,
+                (now, current_project_id),
+            )
+            conn.execute(
+                """
+                UPDATE project_job_types
+                SET display_name='Check Scan', updated_at=?
+                WHERE project_id=? AND job_code='CHECK' AND display_name='Check hồ sơ'
+                """,
+                (now, current_project_id),
+            )
 
     def _ensure_defaults(self, conn: sqlite3.Connection) -> None:
         defaults = {
@@ -860,6 +951,7 @@ class Database:
                 (project_id, now, now),
             )
             self._seed_paper_formats(conn, project_id)
+            self._seed_job_types(conn, project_id)
         return project_id
 
     def get_project_settings(self, project_id: int) -> ProjectSettings:
@@ -1137,6 +1229,68 @@ class Database:
             ).fetchone()
             return int(row["id"])
 
+    # ------------------------------------------------------------------
+    # Job types
+    # ------------------------------------------------------------------
+    def list_job_types(self, project_id: int, *, enabled_only: bool = False) -> list[JobType]:
+        sql = "SELECT * FROM project_job_types WHERE project_id=?"
+        if enabled_only:
+            sql += " AND enabled=1"
+        sql += " ORDER BY sort_order, job_code"
+        with self.connect() as conn:
+            rows = conn.execute(sql, (project_id,)).fetchall()
+            if not rows:
+                self._seed_job_types(conn, project_id)
+                rows = conn.execute(sql, (project_id,)).fetchall()
+        return [
+            JobType(
+                row["id"],
+                row["project_id"],
+                row["job_code"],
+                row["display_name"],
+                bool(row["enabled"]),
+                int(row["sort_order"]),
+            )
+            for row in rows
+        ]
+
+    def save_job_type(self, job_type: JobType) -> int:
+        code = job_type.job_code.strip().upper()
+        display_name = job_type.display_name.strip()
+        if not code or any(char in code for char in r'\/:*?"<>|'):
+            raise ValueError("Mã công việc không hợp lệ.")
+        if not display_name:
+            raise ValueError("Cần nhập tên công việc.")
+        now = utc_now()
+        with self.connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO project_job_types(
+                    project_id, job_code, display_name, enabled,
+                    sort_order, created_at, updated_at
+                ) VALUES(?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(project_id, job_code) DO UPDATE SET
+                    display_name=excluded.display_name,
+                    enabled=excluded.enabled,
+                    sort_order=excluded.sort_order,
+                    updated_at=excluded.updated_at
+                """,
+                (
+                    job_type.project_id,
+                    code,
+                    display_name,
+                    int(job_type.enabled),
+                    max(0, int(job_type.sort_order)),
+                    now,
+                    now,
+                ),
+            )
+            row = conn.execute(
+                "SELECT id FROM project_job_types WHERE project_id=? AND job_code=?",
+                (job_type.project_id, code),
+            ).fetchone()
+            return int(row["id"])
+
     def list_tasks(self, project_id: int) -> list[sqlite3.Row]:
         with self.connect() as conn:
             return conn.execute(
@@ -1409,12 +1563,18 @@ class Database:
         limit: int = 50,
         offset: int = 0,
         search: str = "",
+        filters: dict[str, str] | None = None,
     ) -> tuple[list[dict[str, Any]], int]:
         where = ["rk.record_key<>''"]
         params: dict[str, Any] = {
             "project_id": project_id,
             "limit": limit,
             "offset": offset,
+        }
+        active_filters = {
+            key: str(value).strip()
+            for key, value in (filters or {}).items()
+            if str(value).strip()
         }
         if search.strip():
             term = f"%{search.strip()}%"
@@ -1427,6 +1587,23 @@ class Database:
                 """
             )
             params["search"] = term
+        if active_filters.get("record_key"):
+            where.append("rk.record_key LIKE :record_key_filter")
+            params["record_key_filter"] = f"%{active_filters['record_key']}%"
+        if active_filters.get("client_code"):
+            where.append("COALESCE(bs.client_codes, '') LIKE :client_code_filter")
+            params["client_code_filter"] = f"%{active_filters['client_code']}%"
+        if active_filters.get("record_status"):
+            where.append("COALESCE(rw.record_status, 'NOT_STARTED')=:record_status_filter")
+            params["record_status_filter"] = active_filters["record_status"]
+        if active_filters.get("backup_status"):
+            where.append("COALESCE(bs.backup_status, 'NOT_BACKED_UP')=:backup_status_filter")
+            params["backup_status_filter"] = active_filters["backup_status"]
+        for key, value in active_filters.items():
+            if not key.startswith("level_"):
+                continue
+            where.append("('/' || rk.record_key || '/') LIKE :%s" % key)
+            params[key] = f"%/{value}%"
         clause = " AND ".join(where)
         cte = """
             WITH latest_import AS (
@@ -1476,6 +1653,8 @@ class Database:
                 conn.execute(
                     f"{cte} SELECT COUNT(*) FROM record_keys rk "
                     f"LEFT JOIN backup_summary bs ON bs.record_key=rk.record_key "
+                    f"LEFT JOIN record_workflows rw "
+                    f"ON rw.project_id=:project_id AND rw.record_key=rk.record_key "
                     f"WHERE {clause}",
                     params,
                 ).fetchone()[0]
@@ -1589,6 +1768,7 @@ class Database:
                     COALESCE(rps.scan_date, '') AS scan_date,
                     COALESCE(rps.scan_status, 'UNKNOWN') AS scan_status,
                     COALESCE(rps.scan_pages, 0) AS scan_pages,
+                    COALESCE(rps.scan_files, 0) AS scan_files,
                     COALESCE(rps.check_pages, 0) AS check_pages,
                     COALESCE(rps.notes, '') AS notes
                 FROM paper_formats pf
@@ -1622,13 +1802,8 @@ class Database:
             raise ValueError("Không xác định được mã hồ sơ.")
         if record_status not in RECORD_WORKFLOW_STATUSES:
             raise ValueError("Trạng thái hồ sơ không hợp lệ.")
-        for label, value in (("Ngày Scan", scan_date), ("Ngày Check", check_date)):
-            if not value.strip():
-                continue
-            try:
-                datetime.strptime(value.strip(), "%Y-%m-%d")
-            except ValueError as exc:
-                raise ValueError(f"{label} phải có định dạng YYYY-MM-DD.") from exc
+        scan_date = normalize_system_date(scan_date, "Ngày Scan")
+        check_date = normalize_system_date(check_date, "Ngày Check")
         try:
             normalized_check_pages = int(check_pages or 0)
         except (TypeError, ValueError) as exc:
@@ -1649,7 +1824,7 @@ class Database:
                 raise ValueError("Danh mục khổ giấy không thuộc dự án.")
 
             statuses_by_code: dict[str, str] = {}
-            normalized_papers: list[tuple[int, int | None, str, str, int, int, str]] = []
+            normalized_papers: list[tuple[int, int | None, str, str, int, int, int, str]] = []
             for item in paper_statuses:
                 format_id = int(item["paper_format_id"])
                 paper_scanner_id = (
@@ -1657,33 +1832,30 @@ class Database:
                     if str(item.get("scanner_id") or "").strip()
                     else None
                 )
-                paper_scan_date = str(item.get("scan_date", "")).strip()
+                paper_scan_date = normalize_system_date(
+                    str(item.get("scan_date", "")),
+                    f"Ngày Scan của {valid_formats[format_id]}",
+                )
                 scan_status = str(item.get("scan_status", "UNKNOWN"))
                 if scan_status not in PAPER_SCAN_STATUSES:
                     raise ValueError("Trạng thái scan khổ giấy không hợp lệ.")
                 try:
                     scan_pages = int(item.get("scan_pages") or 0)
+                    scan_files = int(item.get("scan_files") or 0)
                     check_pages = int(item.get("check_pages") or 0)
                 except (TypeError, ValueError) as exc:
                     raise ValueError("Số trang scan phải là số nguyên.") from exc
-                if scan_pages < 0 or check_pages < 0:
+                if scan_pages < 0 or scan_files < 0 or check_pages < 0:
                     raise ValueError("Số trang scan không được âm.")
-                if paper_scan_date:
-                    try:
-                        datetime.strptime(paper_scan_date, "%Y-%m-%d")
-                    except ValueError as exc:
-                        raise ValueError(
-                            f"Ngày Scan của {valid_formats[format_id]} phải có định dạng YYYY-MM-DD."
-                        ) from exc
-                if scan_pages > 0 and not paper_scan_date:
-                    raise ValueError(f"{valid_formats[format_id]} đã có số trang nhưng chưa nhập Ngày Scan.")
-                if scan_status in {"UNKNOWN", "NOT_PRESENT"} and scan_pages:
+                if (scan_pages > 0 or scan_files > 0) and not paper_scan_date:
+                    raise ValueError(f"{valid_formats[format_id]} đã có dữ liệu scan nhưng chưa nhập Ngày Scan.")
+                if scan_status in {"UNKNOWN", "NOT_PRESENT"} and (scan_pages or scan_files):
                     raise ValueError(
-                        f"{valid_formats[format_id]} chưa có dữ liệu nhưng số trang khác 0."
+                        f"{valid_formats[format_id]} chưa có dữ liệu nhưng số trang/số file khác 0."
                     )
-                if scan_status in {"SCANNED", "CHECKED"} and scan_pages == 0:
+                if scan_status in {"SCANNED", "CHECKED"} and scan_pages == 0 and scan_files == 0:
                     raise ValueError(
-                        f"{valid_formats[format_id]} đã scan nhưng chưa nhập số trang Scan."
+                        f"{valid_formats[format_id]} đã scan nhưng chưa nhập số trang hoặc số file Scan."
                     )
                 statuses_by_code[valid_formats[format_id]] = scan_status
                 normalized_papers.append(
@@ -1693,6 +1865,7 @@ class Database:
                         paper_scan_date,
                         scan_status,
                         scan_pages,
+                        scan_files,
                         check_pages,
                         str(item.get("notes", "")).strip(),
                     )
@@ -1752,18 +1925,19 @@ class Database:
                     (project_id, record_key),
                 ).fetchone()["id"]
             )
-            for format_id, paper_scanner_id, paper_scan_date, status, scan_pages, check_pages, paper_notes in normalized_papers:
+            for format_id, paper_scanner_id, paper_scan_date, status, scan_pages, scan_files, check_pages, paper_notes in normalized_papers:
                 conn.execute(
                     """
                     INSERT INTO record_paper_statuses(
                         record_id, paper_format_id, scanner_id, scan_date, scan_status, scan_pages,
-                        check_pages, notes, updated_at
-                    ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        scan_files, check_pages, notes, updated_at
+                    ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(record_id, paper_format_id) DO UPDATE SET
                         scanner_id=excluded.scanner_id,
                         scan_date=excluded.scan_date,
                         scan_status=excluded.scan_status,
                         scan_pages=excluded.scan_pages,
+                        scan_files=excluded.scan_files,
                         check_pages=excluded.check_pages,
                         notes=excluded.notes,
                         updated_at=excluded.updated_at
@@ -1775,6 +1949,7 @@ class Database:
                         paper_scan_date,
                         status,
                         scan_pages,
+                        scan_files,
                         check_pages,
                         paper_notes,
                         now,

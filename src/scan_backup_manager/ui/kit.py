@@ -8,25 +8,14 @@ from __future__ import annotations
 
 import flet as ft
 
-from .theme import (
-    BG_BASE,
-    GLOW_CYAN,
-    LINE,
-    LINE_STRONG,
-    PRIMARY_DARK,
-    SURFACE,
-    TEXT_MUTED,
-    TEXT_PRIMARY,
-    scrollable_table,
-    status_color,
-    status_label,
-)
+from . import theme
 
 
 # ---------------------------------------------------------------------------
 # Atoms
 # ---------------------------------------------------------------------------
-def glow(color: str = PRIMARY_DARK, *, blur: float = 24, opacity: float = 0.35, y: float = 8) -> ft.BoxShadow:
+def glow(color: str | None = None, *, blur: float = 24, opacity: float = 0.35, y: float = 8) -> ft.BoxShadow:
+    color = color or theme.primary()
     return ft.BoxShadow(
         blur_radius=blur,
         spread_radius=0,
@@ -35,23 +24,23 @@ def glow(color: str = PRIMARY_DARK, *, blur: float = 24, opacity: float = 0.35, 
     )
 
 
-def eyebrow(text: str, *, color: str = PRIMARY_DARK) -> ft.Text:
+def eyebrow(text: str, *, color: str | None = None) -> ft.Text:
     """Uppercase, letter-spaced micro-label -- the app's 'techno' texture
     without a bundled display font."""
     return ft.Text(
         text.upper(),
         size=11,
-        color=color,
+        color=color or theme.primary(),
         style=ft.TextStyle(weight=ft.FontWeight.BOLD, letter_spacing=1.6),
     )
 
 
-def title_text(text: str, *, size: int = 22, color: str = TEXT_PRIMARY) -> ft.Text:
-    return ft.Text(text, size=size, weight=ft.FontWeight.BOLD, color=color)
+def title_text(text: str, *, size: int = 22, color: str | None = None) -> ft.Text:
+    return ft.Text(text, size=size, weight=ft.FontWeight.BOLD, color=color or theme.text_primary())
 
 
 def muted_text(text: str, *, size: int = 13) -> ft.Text:
-    return ft.Text(text, size=size, color=TEXT_MUTED)
+    return ft.Text(text, size=size, color=theme.text_muted())
 
 
 def logo_mark(size: int = 34) -> ft.Control:
@@ -63,11 +52,11 @@ def logo_mark(size: int = 34) -> ft.Control:
         gradient=ft.LinearGradient(
             begin=ft.Alignment.TOP_LEFT,
             end=ft.Alignment.BOTTOM_RIGHT,
-            colors=[PRIMARY_DARK, "#3D5AFE"],
+            colors=[theme.primary(), "#3D5AFE"],
         ),
-        shadow=glow(PRIMARY_DARK, blur=18, opacity=0.5, y=0),
+        shadow=glow(theme.primary(), blur=18, opacity=0.35 if theme.is_light_mode() else 0.5, y=0),
         alignment=ft.Alignment.CENTER,
-        content=ft.Icon(ft.Icons.SHIELD_MOON, color=BG_BASE, size=size * 0.56),
+        content=ft.Icon(ft.Icons.SHIELD_MOON, color=theme.bg_base(), size=size * 0.56),
     )
 
 
@@ -76,8 +65,8 @@ def logo_mark(size: int = 34) -> ft.Control:
 # ---------------------------------------------------------------------------
 def _primary_style() -> ft.ButtonStyle:
     return ft.ButtonStyle(
-        bgcolor=PRIMARY_DARK,
-        color=BG_BASE,
+        bgcolor=theme.primary(),
+        color="#FFFFFF" if theme.is_light_mode() else theme.bg_base(),
         shape=ft.RoundedRectangleBorder(radius=10),
         padding=ft.Padding.symmetric(vertical=16, horizontal=20),
         text_style=ft.TextStyle(weight=ft.FontWeight.BOLD, letter_spacing=0.4),
@@ -85,7 +74,8 @@ def _primary_style() -> ft.ButtonStyle:
     )
 
 
-def _ghost_style(*, accent: str = PRIMARY_DARK) -> ft.ButtonStyle:
+def _ghost_style(*, accent: str | None = None) -> ft.ButtonStyle:
+    accent = accent or theme.primary()
     return ft.ButtonStyle(
         color=accent,
         side=ft.BorderSide(1, ft.Colors.with_opacity(0.55, accent)),
@@ -99,7 +89,7 @@ def primary_button(text: str, *, on_click=None, icon=None, **kwargs) -> ft.Fille
     return ft.FilledButton(text, icon=icon, on_click=on_click, style=_primary_style(), **kwargs)
 
 
-def ghost_button(text: str, *, on_click=None, icon=None, accent: str = PRIMARY_DARK, **kwargs) -> ft.OutlinedButton:
+def ghost_button(text: str, *, on_click=None, icon=None, accent: str | None = None, **kwargs) -> ft.OutlinedButton:
     return ft.OutlinedButton(text, icon=icon, on_click=on_click, style=_ghost_style(accent=accent), **kwargs)
 
 
@@ -112,16 +102,16 @@ def card(
     glow_color: str | None = None,
     padding: int = 20,
     radius: int = 14,
-    bgcolor: str = SURFACE,
-    border_color: str = LINE,
+    bgcolor: str | None = None,
+    border_color: str | None = None,
     expand: bool | int | None = None,
 ) -> ft.Container:
     return ft.Container(
         content=content,
         padding=padding,
         border_radius=radius,
-        bgcolor=bgcolor,
-        border=ft.Border.all(1, border_color),
+        bgcolor=bgcolor or theme.surface(),
+        border=ft.Border.all(1, border_color or theme.line()),
         shadow=glow(glow_color) if glow_color else None,
         expand=expand,
     )
@@ -129,10 +119,16 @@ def card(
 
 def section(title: str, subtitle: str, content: ft.Control, *, icon=None) -> ft.Control:
     header_left: list[ft.Control] = [
-        ft.Container(width=4, height=40, border_radius=4, bgcolor=PRIMARY_DARK, shadow=glow(PRIMARY_DARK, blur=12, opacity=0.5, y=0)),
+        ft.Container(
+            width=4,
+            height=40,
+            border_radius=4,
+            bgcolor=theme.primary(),
+            shadow=glow(theme.primary(), blur=12, opacity=0.30 if theme.is_light_mode() else 0.5, y=0),
+        ),
     ]
     if icon is not None:
-        header_left.append(ft.Icon(icon, color=PRIMARY_DARK, size=20))
+        header_left.append(ft.Icon(icon, color=theme.primary(), size=20))
     header_left.append(
         ft.Column(
             spacing=2,
@@ -147,7 +143,7 @@ def section(title: str, subtitle: str, content: ft.Control, *, icon=None) -> ft.
             spacing=14,
             controls=[
                 ft.Row(spacing=10, vertical_alignment=ft.CrossAxisAlignment.CENTER, controls=header_left),
-                ft.Divider(height=1, color=LINE),
+                ft.Divider(height=1, color=theme.line()),
                 content,
             ],
         ),
@@ -208,7 +204,7 @@ def badge(label: str, color: str) -> ft.Control:
 
 
 def status_badge(status: str) -> ft.Control:
-    return badge(status_label(status), status_color(status))
+    return badge(theme.status_label(status), theme.status_color(status))
 
 
 def tab_bar(items, selected_index: int, on_select) -> ft.Control:
@@ -231,8 +227,8 @@ def tab_bar(items, selected_index: int, on_select) -> ft.Control:
     return ft.Container(
         padding=8,
         border_radius=12,
-        bgcolor=ft.Colors.with_opacity(0.05, PRIMARY_DARK),
-        border=ft.Border.all(1, LINE),
+        bgcolor=ft.Colors.with_opacity(0.07, theme.primary()),
+        border=ft.Border.all(1, theme.line()),
         content=ft.Row(spacing=8, wrap=True, controls=buttons),
     )
 
@@ -241,14 +237,49 @@ def style_table(table: ft.DataTable) -> ft.DataTable:
     """Apply consistent cyberpunk theming to a DataTable in place (cyan heading
     band, hairline row separators, no heavy outer border). Returns the same
     table for chaining."""
-    table.heading_row_color = ft.Colors.with_opacity(0.12, PRIMARY_DARK)
+    table.heading_row_color = ft.Colors.with_opacity(0.11 if theme.is_light_mode() else 0.12, theme.primary())
     table.heading_text_style = ft.TextStyle(
-        weight=ft.FontWeight.BOLD, color=PRIMARY_DARK, letter_spacing=0.5, size=12
+        weight=ft.FontWeight.BOLD, color=theme.primary(), letter_spacing=0.5, size=12
     )
-    table.horizontal_lines = ft.BorderSide(1, ft.Colors.with_opacity(0.08, PRIMARY_DARK))
+    table.horizontal_lines = ft.BorderSide(1, ft.Colors.with_opacity(0.14 if theme.is_light_mode() else 0.08, theme.primary()))
     table.border = ft.Border.all(0, ft.Colors.TRANSPARENT)
     table.heading_row_height = max(table.heading_row_height or 0, 46)
     return table
+
+
+def dialog(
+    title: str,
+    content: ft.Control,
+    actions: list[ft.Control],
+    *,
+    icon=None,
+    width: int | None = None,
+) -> ft.AlertDialog:
+    """Themed AlertDialog: cyan-accented dark surface, rounded hairline
+    border and consistent title/content padding, matching the rest of the
+    cyberpunk design system instead of Flet's plain default popup."""
+    title_controls: list[ft.Control] = []
+    if icon is not None:
+        title_controls.append(ft.Icon(icon, color=theme.primary(), size=20))
+    title_controls.append(title_text(title, size=17))
+    body = ft.Container(width=width, content=content) if width else content
+    return ft.AlertDialog(
+        modal=True,
+        bgcolor=theme.surface_high(),
+        shape=ft.RoundedRectangleBorder(
+            radius=16,
+            side=ft.BorderSide(1, theme.line_strong()),
+        ),
+        shadow_color=ft.Colors.with_opacity(0.35, theme.primary()),
+        barrier_color=ft.Colors.with_opacity(0.55, theme.bg_base()),
+        title=ft.Row(spacing=10, vertical_alignment=ft.CrossAxisAlignment.CENTER, controls=title_controls),
+        title_padding=ft.Padding.symmetric(horizontal=24, vertical=20),
+        content=body,
+        content_padding=ft.Padding.symmetric(horizontal=24, vertical=12),
+        actions=actions,
+        actions_padding=ft.Padding.symmetric(horizontal=20, vertical=16),
+        actions_alignment=ft.MainAxisAlignment.END,
+    )
 
 
 def table_frame(table: ft.Control) -> ft.Control:
@@ -258,10 +289,10 @@ def table_frame(table: ft.Control) -> ft.Control:
     if isinstance(table, ft.DataTable):
         style_table(table)
     return ft.Container(
-        content=scrollable_table(table),
+        content=theme.scrollable_table(table),
         padding=6,
-        bgcolor=SURFACE,
+        bgcolor=theme.surface(),
         border_radius=14,
-        border=ft.Border.all(1, LINE),
+        border=ft.Border.all(1, theme.line()),
         clip_behavior=ft.ClipBehavior.HARD_EDGE,
     )

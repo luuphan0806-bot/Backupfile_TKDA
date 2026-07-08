@@ -5,20 +5,27 @@ from pathlib import Path
 
 import flet as ft
 
+from ....models import ProjectTask
 from ... import kit
+from ...date_format import DISPLAY_DATE_HINT, display_to_iso, iso_to_display
 from ...theme import DANGER, INFO, LINE, SUCCESS, WARNING, TEXT_MUTED
 
 
-PAGE_SIZE = 50
-PAPER_CELL_WIDTH = 178
-# Each Scan/Check cell stacks up to three labelled Material fields. A field
-# with a floating label needs ~48-52px of height or the label collides with
-# its value (the "chồng chéo" seen in the A4/A3/A0 columns). The row height
-# must in turn fit three such fields plus spacing so nothing clips into the
-# next row: 3*52 + 2*6 spacing + 2*6 container padding = 180, rounded up.
-PAPER_FIELD_HEIGHT = 52
-PAPER_TABLE_ROW_HEIGHT = 210
+DEFAULT_PAGE_SIZE = 50
+PAGE_SIZE_OPTIONS = [25, 50, 100]
+PAPER_CELL_WIDTH = 320
+# Scan cells use borderless inline fields: name, page/file count and execution date.
+# Keep the row compact, but tall enough for editable lines plus save icon.
+PAPER_FIELD_HEIGHT = 32
+PAPER_TABLE_ROW_HEIGHT = 150
 PAPER_SAVE_BUTTON_SIZE = PAPER_FIELD_HEIGHT
+SYSTEM_TABLE_MIN_WIDTH = 1560
+SCAN_FILE_COLORS = {
+    "A4": "#2563EB",
+    "A3": "#B45309",
+    "A0": "#059669",
+}
+SCAN_PAGE_COLOR = "#0891B2"
 
 RECORD_STATUS_LABELS = {
     "NOT_STARTED": "Chưa thực hiện",
@@ -50,12 +57,21 @@ def build(ctx) -> ft.Control:
         {"search": "", "page": 0},
     )
     state.setdefault("flash", "")
-    state.setdefault("adding", False)
-    state.setdefault("new_record", {})
     state.setdefault("selected_records", set())
     state.setdefault("clipboard_records", [])
+    state.setdefault("filters", {})
+    state.setdefault("page_size", DEFAULT_PAGE_SIZE)
+    state.setdefault("column_weights", {})
+    state.setdefault("column_widths", {})
     if not isinstance(state["selected_records"], set):
         state["selected_records"] = set(state["selected_records"])
+    if int(state.get("page_size", DEFAULT_PAGE_SIZE)) not in PAGE_SIZE_OPTIONS:
+        state["page_size"] = DEFAULT_PAGE_SIZE
+    if not isinstance(state.get("column_weights"), dict):
+        state["column_weights"] = {}
+    if not isinstance(state.get("column_widths"), dict):
+        state["column_widths"] = {}
+    page_size = int(state["page_size"])
     status_banner = ft.Text(state.get("flash", ""), color=ft.Colors.PRIMARY)
     search_field = ft.TextField(
         label="Tìm theo hồ sơ, máy trạm hoặc đường dẫn",
@@ -63,6 +79,7 @@ def build(ctx) -> ft.Control:
         width=360,
         dense=True,
     )
+    filters = state["filters"]
 
     def apply_search(_event=None) -> None:
         state["search"] = (search_field.value or "").strip()
@@ -74,8 +91,32 @@ def build(ctx) -> ft.Control:
         state["page"] = 0
         ctx.refresh()
 
+    def apply_filters(_event=None) -> None:
+        state["filters"] = {
+            "record_key": (record_key_filter.value or "").strip(),
+            "client_code": (client_filter.value or "").strip(),
+            "record_status": record_status_filter.value or "",
+            "backup_status": backup_status_filter.value or "",
+            **{
+                f"level_{index}": (field.value or "").strip()
+                for index, field in enumerate(level_filter_fields)
+            },
+        }
+        state["page"] = 0
+        ctx.refresh()
+
+    def clear_filters(_event=None) -> None:
+        state["filters"] = {}
+        state["page"] = 0
+        ctx.refresh()
+
     def change_page(delta: int) -> None:
         state["page"] = max(0, int(state["page"]) + delta)
+        ctx.refresh()
+
+    def change_page_size(event) -> None:
+        state["page_size"] = int(event.control.value or DEFAULT_PAGE_SIZE)
+        state["page"] = 0
         ctx.refresh()
 
     def optional_personnel_id(value: str | None) -> int | None:
@@ -98,6 +139,7 @@ def build(ctx) -> ft.Control:
                     "scan_date": paper.get("scan_date", ""),
                     "scan_status": paper["scan_status"],
                     "scan_pages": str(paper["scan_pages"]),
+                    "scan_files": str(paper.get("scan_files", 0)),
                     "check_pages": str(paper["check_pages"]),
                     "notes": paper["notes"],
                 }
@@ -152,7 +194,10 @@ def build(ctx) -> ft.Control:
             ),
             message=f"Đã lưu trạng thái {record['record_key']}.",
         )
-        return ft.DataCell(control)
+        return ft.DataCell(
+            ft.Container(expand=True, alignment=ft.Alignment.CENTER, content=control),
+            expand=column_weight("record_status"),
+        )
 
     def open_folder(record: dict) -> None:
         try:
@@ -168,17 +213,254 @@ def build(ctx) -> ft.Control:
 
     search_field.on_submit = apply_search
     page_index = int(state["page"])
+    directory_levels = ctx.db.list_directory_levels(ctx.project_id)
+    record_key_filter = ft.TextField(
+        label="Lọc mã hồ sơ",
+        value=filters.get("record_key", ""),
+        width=170,
+        dense=True,
+    )
+    client_filter = ft.TextField(
+        label="Lọc máy lưu",
+        value=filters.get("client_code", ""),
+        width=150,
+        dense=True,
+    )
+    record_status_filter = ft.Dropdown(
+        label="Trạng thái hồ sơ",
+        dense=True,
+        width=180,
+        value=filters.get("record_status", ""),
+        options=[
+            ft.dropdown.Option(key="", text="Tất cả"),
+            *[
+                ft.dropdown.Option(key=key, text=label)
+                for key, label in RECORD_STATUS_LABELS.items()
+            ],
+        ],
+    )
+    backup_status_filter = ft.Dropdown(
+        label="Backup",
+        dense=True,
+        width=160,
+        value=filters.get("backup_status", ""),
+        options=[
+            ft.dropdown.Option(key="", text="Tất cả"),
+            *[
+                ft.dropdown.Option(key=key, text=label)
+                for key, label in BACKUP_STATUS_LABELS.items()
+            ],
+        ],
+    )
+    level_filter_fields = [
+        ft.TextField(
+            label=f"Lọc {level.display_name}",
+            value=filters.get(f"level_{index}", ""),
+            width=150,
+            dense=True,
+        )
+        for index, level in enumerate(directory_levels)
+    ]
+    for field in [record_key_filter, client_filter, *level_filter_fields]:
+        field.on_submit = apply_filters
     records, total_rows = ctx.db.list_system_records_page(
         ctx.project_id,
-        limit=PAGE_SIZE,
-        offset=page_index * PAGE_SIZE,
+        limit=page_size,
+        offset=page_index * page_size,
         search=state["search"],
+        filters=filters,
     )
     paper_formats = ctx.db.list_paper_formats(ctx.project_id, enabled_only=True)
-    directory_levels = ctx.db.list_directory_levels(ctx.project_id)
     personnel = ctx.db.list_personnel(ctx.project_id, enabled_only=True)
     clients = ctx.db.list_clients(ctx.project_id)
-    add_fields: list[ft.TextField] = []
+    job_types = ctx.db.list_job_types(ctx.project_id, enabled_only=True)
+    personnel_names = {
+        str(person.id): person.full_name
+        for person in personnel
+        if person.id is not None
+    }
+
+    def personnel_name(person_id: str) -> str:
+        return personnel_names.get(person_id, "")
+
+    def visible_table_width() -> float:
+        page_width = float(getattr(ctx.page, "width", 0) or 0)
+        window_width = float(getattr(ctx.page.window, "width", 1360) or 1360)
+        available_width = max(page_width, window_width)
+        sidebar_width = 72
+        content_padding = 48
+        table_frame_padding = 16
+        return max(
+            SYSTEM_TABLE_MIN_WIDTH,
+            available_width - sidebar_width - content_padding - table_frame_padding,
+        )
+
+    default_column_weights: dict[str, int] = {
+        "stt": 1,
+        "check": 6,
+        "record_status": 4,
+        "backup_status": 3,
+        "client_codes": 3,
+        "actions": 2,
+    }
+    for index, _level in enumerate(directory_levels):
+        default_column_weights[f"level_{index}"] = 2
+    if not directory_levels:
+        default_column_weights["record_key"] = 4
+    for paper_format in paper_formats:
+        default_column_weights[f"scan_{paper_format.code}"] = 6
+    column_weights = state["column_weights"]
+    for key, value in default_column_weights.items():
+        column_weights.setdefault(key, value)
+
+    def column_weight(key: str) -> int:
+        return max(1, int(column_weights.get(key, default_column_weights.get(key, 1))))
+
+    column_widths = state["column_widths"]
+    min_column_widths = {
+        "stt": 64,
+        "record_status": 170,
+        "backup_status": 150,
+        "client_codes": 150,
+        "actions": 92,
+        "check": 250,
+    }
+    for index, _level in enumerate(directory_levels):
+        min_column_widths[f"level_{index}"] = 120
+    if not directory_levels:
+        min_column_widths["record_key"] = 220
+    for paper_format in paper_formats:
+        min_column_widths[f"scan_{paper_format.code}"] = 280
+
+    def reset_column_widths() -> None:
+        table_width = visible_table_width()
+        spacing = 12 * max(0, len(default_column_weights) - 1) + 16
+        usable_width = max(600, table_width - spacing)
+        total_weight = sum(column_weight(key) for key in default_column_weights)
+        column_widths.clear()
+        for key in default_column_weights:
+            weighted_width = usable_width * column_weight(key) / total_weight
+            column_widths[key] = max(
+                min_column_widths.get(key, 100),
+                int(weighted_width),
+            )
+
+    expected_width_keys = set(default_column_weights)
+    if set(column_widths) != expected_width_keys:
+        reset_column_widths()
+
+    def column_width(key: str) -> int:
+        return max(
+            min_column_widths.get(key, 100),
+            int(column_widths.get(key, min_column_widths.get(key, 100))),
+        )
+
+    def actual_table_width() -> int:
+        content_width = sum(column_width(key) for key in default_column_weights)
+        spacing = 12 * max(0, len(default_column_weights) - 1) + 16
+        return max(int(visible_table_width()), content_width + spacing)
+
+    def resize_columns(left_key: str, right_key: str | None, delta: float) -> None:
+        if not right_key or abs(delta) < 1:
+            return
+        left = column_width(left_key)
+        right = column_width(right_key)
+        left_min = min_column_widths.get(left_key, 100)
+        right_min = min_column_widths.get(right_key, 100)
+        movement = int(delta)
+        if movement > 0:
+            movement = min(movement, right - right_min)
+        else:
+            movement = -min(abs(movement), left - left_min)
+        if movement == 0:
+            return
+        column_widths[left_key] = left + movement
+        column_widths[right_key] = right - movement
+        ctx.refresh()
+
+    def drag_delta(event) -> float:
+        for attr in ("primary_delta", "delta_x"):
+            value = getattr(event, attr, None)
+            if value is not None:
+                return float(value or 0)
+        for attr in ("local_delta", "global_delta"):
+            value = getattr(event, attr, None)
+            if value is not None and hasattr(value, "x"):
+                return float(value.x or 0)
+        return 0.0
+
+    def header(label: str, key: str, next_key: str | None = None) -> ft.Control:
+        controls: list[ft.Control] = [
+            ft.Container(
+                expand=True,
+                alignment=ft.Alignment.CENTER,
+                padding=ft.Padding.symmetric(horizontal=4, vertical=0),
+                content=ft.Text(
+                    label,
+                    text_align=ft.TextAlign.CENTER,
+                    size=12,
+                    weight=ft.FontWeight.W_600,
+                    tooltip=label,
+                ),
+            )
+        ]
+        if next_key:
+            controls.append(
+                ft.GestureDetector(
+                    width=18,
+                    height=38,
+                    mouse_cursor=ft.MouseCursor.RESIZE_COLUMN,
+                    drag_interval=24,
+                    on_horizontal_drag_update=lambda event, left=key, right=next_key: resize_columns(
+                        left,
+                        right,
+                        drag_delta(event),
+                    ),
+                    content=ft.Container(
+                        alignment=ft.Alignment.CENTER,
+                        content=ft.Container(
+                            width=2,
+                            height=24,
+                            border_radius=1,
+                            bgcolor=ft.Colors.with_opacity(0.22, ft.Colors.PRIMARY),
+                        ),
+                    ),
+                    tooltip="Kéo để đổi độ rộng cột",
+                )
+            )
+        return ft.Row(
+            spacing=0,
+            alignment=ft.MainAxisAlignment.CENTER,
+            vertical_alignment=ft.CrossAxisAlignment.CENTER,
+            controls=controls,
+        )
+
+    def col(
+        label: str,
+        key: str,
+        *,
+        next_key: str | None = None,
+        numeric: bool = False,
+    ) -> ft.DataColumn:
+        return ft.DataColumn(
+            ft.Container(
+                width=column_width(key),
+                content=header(label, key, next_key),
+            ),
+            numeric=numeric,
+            heading_row_alignment=ft.MainAxisAlignment.CENTER,
+        )
+
+    def cell(content: ft.Control | str, *, key: str) -> ft.DataCell:
+        if isinstance(content, str):
+            content = ft.Text(content, text_align=ft.TextAlign.CENTER)
+        return ft.DataCell(
+            ft.Container(
+                width=column_width(key),
+                alignment=ft.Alignment.CENTER,
+                content=content,
+            ),
+        )
 
     def selected_record_keys() -> list[str]:
         selected = state["selected_records"]
@@ -201,6 +483,7 @@ def build(ctx) -> ft.Control:
                     "scan_date": paper.get("scan_date", ""),
                     "scan_status": paper["scan_status"],
                     "scan_pages": str(paper["scan_pages"]),
+                    "scan_files": str(paper.get("scan_files", 0)),
                     "check_pages": str(paper["check_pages"]),
                     "notes": paper["notes"],
                 }
@@ -300,91 +583,127 @@ def build(ctx) -> ft.Control:
             ]
         return [("record_key", "Mã hồ sơ")]
 
-    def build_add_panel() -> ft.Control:
-        add_fields.clear()
-        client_dropdown = ft.Dropdown(
-            label="Máy nhận hồ sơ cứng",
+    def task_code_for(record_parts: list[str], job_code: str) -> str:
+        raw = "_".join([job_code, *record_parts]).upper()
+        clean = "".join(char if char.isalnum() else "_" for char in raw)
+        return clean[:80].strip("_") or job_code
+
+    def open_create_job_dialog(_event=None) -> None:
+        record_fields = [
+            ft.TextField(label=label, dense=True, width=180)
+            for _key, label in new_record_keys()
+        ]
+        job_dropdown = ft.Dropdown(
+            label="Tên công việc",
             dense=True,
             width=240,
-            value=state["new_record"].get("client_code", ""),
+            value=job_types[0].job_code if job_types else "",
             options=[
-                ft.dropdown.Option(key="", text="-- Chưa chọn --"),
-                *[
-                    ft.dropdown.Option(
-                        key=client.client_code,
-                        text=f"{client.client_code} - {client.share_path}",
-                    )
-                    for client in clients
-                    if client.enabled
-                ],
+                ft.dropdown.Option(key=item.job_code, text=item.display_name)
+                for item in job_types
             ],
         )
-        client_dropdown.on_change = lambda event: state["new_record"].__setitem__(
-            "client_code", event.control.value or ""
+        personnel_dropdown = ft.Dropdown(
+            label="Nhân sự đảm nhiệm",
+            dense=True,
+            width=260,
+            options=[
+                ft.dropdown.Option(key=str(person.id), text=person.full_name)
+                for person in personnel
+                if person.id is not None
+            ],
         )
-        controls: list[ft.Control] = [client_dropdown]
-        for key, label in new_record_keys():
-            field = ft.TextField(
-                label=label,
-                value=state["new_record"].get(key, ""),
-                dense=True,
-                width=170,
-                content_padding=ft.Padding.symmetric(vertical=7, horizontal=10),
-                on_change=lambda event, current_key=key: state["new_record"].__setitem__(
-                    current_key, event.control.value or ""
-                ),
-            )
-            add_fields.append(field)
-            controls.append(field)
-
-        def add_record(_event=None) -> None:
-            if directory_levels:
-                parts = [
-                    (state["new_record"].get(f"level_{index}", "") or "").strip()
-                    for index, _level in enumerate(directory_levels)
-                ]
-            else:
-                raw_key = (state["new_record"].get("record_key", "") or "").strip()
-                parts = [part for part in raw_key.replace("\\", "/").split("/") if part]
-            try:
-                ctx.mapfiles.add_manual_record(
-                    ctx.project_id,
-                    parts,
-                    client_code=(state["new_record"].get("client_code") or "").strip() or None,
+        client_dropdown = ft.Dropdown(
+            label="Máy nhân sự đang ngồi",
+            dense=True,
+            width=260,
+            options=[
+                ft.dropdown.Option(
+                    key=client.client_code,
+                    text=f"{client.client_code} - {client.share_path}",
                 )
-            except ValueError as exc:
-                status_banner.value = str(exc)
-                status_banner.color = ft.Colors.ERROR
+                for client in clients
+                if client.enabled
+            ],
+        )
+        error_text = ft.Text("", color=DANGER)
+
+        def submit(_submit_event=None) -> None:
+            if directory_levels:
+                parts = [(field.value or "").strip() for field in record_fields]
+            else:
+                raw_key = (record_fields[0].value or "").strip()
+                parts = [part for part in raw_key.replace("\\", "/").split("/") if part]
+            job_code = job_dropdown.value or ""
+            personnel_id = int(personnel_dropdown.value) if personnel_dropdown.value else None
+            client_code = (client_dropdown.value or "").strip()
+            if not parts or any(not part for part in parts):
+                error_text.value = "Cần nhập đầy đủ thông tin hồ sơ."
                 ctx.page.update()
                 return
-            state["new_record"] = {}
-            state["adding"] = False
-            state["flash"] = "Đã thêm dòng mapfile mới."
+            if not job_code:
+                error_text.value = "Cần chọn tên công việc."
+                ctx.page.update()
+                return
+            if personnel_id is None:
+                error_text.value = "Cần chọn nhân sự đảm nhiệm."
+                ctx.page.update()
+                return
+            if not client_code:
+                error_text.value = "Cần chọn máy nhân sự đang ngồi."
+                ctx.page.update()
+                return
+            job_label = next(
+                (item.display_name for item in job_types if item.job_code == job_code),
+                job_code,
+            )
+            try:
+                row_id = ctx.mapfiles.add_manual_record(
+                    ctx.project_id,
+                    parts,
+                    file_name="1.pdf",
+                    client_code=client_code,
+                )
+                ctx.db.save_task(
+                    ProjectTask(
+                        None,
+                        ctx.project_id,
+                        task_code_for(parts, job_code),
+                        job_label,
+                        f"Thư mục hồ sơ: {'/'.join(parts)}\nMáy trạm: {client_code}\nDòng mapfile: {row_id}",
+                        personnel_id,
+                        "",
+                    )
+                )
+            except ValueError as exc:
+                error_text.value = str(exc)
+                ctx.page.update()
+                return
+            ctx.page.pop_dialog()
+            state["flash"] = f"Đã tạo công việc {job_label} và thêm thư mục hồ sơ {'/'.join(parts)}."
             state["page"] = 0
             ctx.refresh()
 
-        return ft.Container(
-            padding=12,
-            border=ft.Border.all(1, LINE),
-            border_radius=8,
-            content=ft.Row(
-                wrap=True,
-                vertical_alignment=ft.CrossAxisAlignment.CENTER,
-                spacing=8,
+        dialog = kit.dialog(
+            "Tạo công việc và thêm dòng hồ sơ",
+            ft.Column(
+                spacing=12,
+                tight=True,
+                scroll=ft.ScrollMode.AUTO,
                 controls=[
-                    *controls,
-                    ft.FilledButton("Lưu dòng", icon=ft.Icons.SAVE, on_click=add_record),
-                    ft.TextButton(
-                        "Hủy",
-                        on_click=lambda _e: (
-                            state.__setitem__("adding", False),
-                            state.__setitem__("new_record", {}),
-                            ctx.refresh(),
-                        ),
-                    ),
+                    ft.Row(record_fields, wrap=True, spacing=8),
+                    ft.Row([job_dropdown, personnel_dropdown, client_dropdown], wrap=True, spacing=8),
+                    error_text,
                 ],
             ),
+            [
+                kit.ghost_button("Hủy", on_click=lambda _e: ctx.page.pop_dialog()),
+                kit.primary_button("Tạo công việc", icon=ft.Icons.ADD_TASK, on_click=submit),
+            ],
+            icon=ft.Icons.ADD_TASK,
+            width=720,
         )
+        ctx.page.show_dialog(dialog)
 
     def paper_scan_cell(record: dict, paper_format) -> ft.DataCell:
         current = dict(record["paper_statuses"].get(paper_format.code) or {})
@@ -392,47 +711,129 @@ def build(ctx) -> ft.Control:
             "scanner_id": str(current.get("scanner_id") or ""),
             "scan_date": current.get("scan_date", "") or "",
             "scan_pages": str(current.get("scan_pages", 0) or 0),
+            "scan_files": str(current.get("scan_files", 0) or 0),
         }
+        def scan_line(icon: str, control: ft.Control) -> ft.Control:
+            return ft.Row(
+                spacing=6,
+                vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                controls=[
+                    ft.Icon(icon, size=14, color=TEXT_MUTED),
+                    control,
+                ],
+            )
+
+        scan_column_width = column_width(f"scan_{paper_format.code}")
+        field_width = max(170, scan_column_width - 58)
+        metric_width = max(92, int((field_width - 8) / 2))
+        file_color = SCAN_FILE_COLORS.get(paper_format.code, ft.Colors.PRIMARY)
         scanner = ft.Dropdown(
             dense=True,
-            width=158,
+            width=field_width,
             height=PAPER_FIELD_HEIGHT,
             value=saved["scanner_id"],
-            label="Người Scan",
-            content_padding=ft.Padding.symmetric(vertical=4, horizontal=8),
+            hint_text="Tên",
+            tooltip=personnel_name(saved["scanner_id"]) or "Người scan",
+            border=ft.InputBorder.NONE,
+            text_size=12,
+            content_padding=ft.Padding.symmetric(vertical=0, horizontal=0),
             options=[
                 ft.dropdown.Option(key="", text="--"),
                 *[
-                    ft.dropdown.Option(key=str(person.id), text=f"{person.personnel_code} - {person.full_name}")
+                    ft.dropdown.Option(key=str(person.id), text=person.full_name)
                     for person in personnel
                     if person.id is not None
                 ],
             ],
         )
         scan_date = ft.TextField(
-            value=saved["scan_date"],
+            value=iso_to_display(saved["scan_date"]),
             dense=True,
-            width=158,
+            width=field_width,
             height=PAPER_FIELD_HEIGHT,
-            label="Ngày Scan",
-            hint_text="YYYY-MM-DD",
-            content_padding=ft.Padding.symmetric(vertical=4, horizontal=8),
+            hint_text=DISPLAY_DATE_HINT,
+            tooltip=f"Ngày thực hiện ({DISPLAY_DATE_HINT})",
+            border=ft.InputBorder.NONE,
+            text_size=12,
+            content_padding=ft.Padding.symmetric(vertical=0, horizontal=0),
         )
         pages = ft.TextField(
             value=saved["scan_pages"],
             dense=True,
-            height=PAPER_FIELD_HEIGHT,
-            width=92,
-            label="Số Trang",
+            height=22,
+            width=max(34, metric_width - 52),
+            hint_text="Trang",
+            tooltip="Số trang",
             keyboard_type=ft.KeyboardType.NUMBER,
-            content_padding=ft.Padding.symmetric(vertical=4, horizontal=8),
+            border=ft.InputBorder.NONE,
+            text_size=12,
+            color=SCAN_PAGE_COLOR,
+            text_align=ft.TextAlign.CENTER,
+            content_padding=ft.Padding.symmetric(vertical=0, horizontal=0),
+        )
+        files = ft.TextField(
+            value=saved["scan_files"],
+            dense=True,
+            height=22,
+            width=max(34, metric_width - 44),
+            hint_text="File",
+            tooltip=f"Số file Scan {paper_format.code}",
+            keyboard_type=ft.KeyboardType.NUMBER,
+            border=ft.InputBorder.NONE,
+            text_size=12,
+            color=file_color,
+            text_align=ft.TextAlign.CENTER,
+            content_padding=ft.Padding.symmetric(vertical=0, horizontal=0),
+        )
+
+        def metric_box(label: str, control: ft.Control, color: str) -> ft.Control:
+            return ft.Container(
+                width=metric_width,
+                height=40,
+                border_radius=6,
+                padding=ft.Padding.symmetric(horizontal=7, vertical=3),
+                bgcolor=ft.Colors.with_opacity(0.08, color),
+                border=ft.Border.all(1, ft.Colors.with_opacity(0.24, color)),
+                content=ft.Column(
+                    spacing=0,
+                    horizontal_alignment=ft.CrossAxisAlignment.CENTER,
+                    alignment=ft.MainAxisAlignment.CENTER,
+                    tight=True,
+                    controls=[
+                        ft.Text(
+                            label,
+                            size=10,
+                            weight=ft.FontWeight.W_600,
+                            color=color,
+                            text_align=ft.TextAlign.CENTER,
+                        ),
+                        control,
+                    ],
+                ),
+            )
+
+        metric_row = ft.Row(
+            spacing=8,
+            vertical_alignment=ft.CrossAxisAlignment.CENTER,
+            controls=[
+                metric_box("Trang", pages, SCAN_PAGE_COLOR),
+                metric_box("File", files, file_color),
+            ],
         )
 
         def commit(_event=None) -> None:
+            try:
+                normalized_date = display_to_iso(scan_date.value or "")
+            except ValueError as exc:
+                status_banner.value = str(exc)
+                status_banner.color = ft.Colors.ERROR
+                ctx.page.update()
+                return
             next_values = {
                 "scanner_id": scanner.value or "",
-                "scan_date": scan_date.value or "",
+                "scan_date": normalized_date,
                 "scan_pages": pages.value or "0",
+                "scan_files": files.value or "0",
             }
             if next_values == saved:
                 return
@@ -443,8 +844,12 @@ def build(ctx) -> ft.Control:
                         item["scanner_id"] = next_values["scanner_id"] or None
                         item["scan_date"] = next_values["scan_date"]
                         item["scan_pages"] = next_values["scan_pages"]
+                        item["scan_files"] = next_values["scan_files"]
                         item["scan_status"] = (
-                            "SCANNED" if int(next_values["scan_pages"] or "0") > 0 else "UNKNOWN"
+                            "SCANNED"
+                            if int(next_values["scan_pages"] or "0") > 0
+                            or int(next_values["scan_files"] or "0") > 0
+                            else "UNKNOWN"
                         )
                         return
 
@@ -457,74 +862,117 @@ def build(ctx) -> ft.Control:
                 saved.update(next_values)
             else:
                 scanner.value = saved["scanner_id"]
-                scan_date.value = saved["scan_date"]
+                scan_date.value = iso_to_display(saved["scan_date"])
                 pages.value = saved["scan_pages"]
+                files.value = saved["scan_files"]
 
         return ft.DataCell(
             ft.Container(
-                width=PAPER_CELL_WIDTH,
+                width=scan_column_width,
                 height=PAPER_TABLE_ROW_HEIGHT - 14,
-                padding=ft.Padding.symmetric(vertical=6, horizontal=0),
-                content=ft.Column(
-                    spacing=6,
-                    tight=True,
+                padding=ft.Padding.symmetric(vertical=5, horizontal=6),
+                border_radius=8,
+                bgcolor=ft.Colors.with_opacity(0.025, ft.Colors.PRIMARY),
+                content=ft.Row(
+                    spacing=2,
+                    vertical_alignment=ft.CrossAxisAlignment.CENTER,
                     controls=[
-                        scanner,
-                        ft.Row(
-                            spacing=4,
+                        ft.Column(
+                            spacing=1,
+                            tight=True,
+                            expand=True,
                             controls=[
-                                pages,
-                                ft.IconButton(
-                                    icon=ft.Icons.SAVE,
-                                    icon_size=18,
-                                    width=PAPER_SAVE_BUTTON_SIZE,
-                                    height=PAPER_SAVE_BUTTON_SIZE,
-                                    padding=0,
-                                    tooltip=f"Lưu Scan {paper_format.code}",
-                                    on_click=commit,
-                                ),
+                                scan_line(ft.Icons.PERSON_OUTLINE, scanner),
+                                scan_line(ft.Icons.FILTER_9_PLUS_OUTLINED, metric_row),
+                                scan_line(ft.Icons.EVENT_OUTLINED, scan_date),
                             ],
                         ),
-                        scan_date,
+                        ft.IconButton(
+                            icon=ft.Icons.SAVE_OUTLINED,
+                            icon_size=16,
+                            width=28,
+                            height=28,
+                            padding=0,
+                            tooltip=f"Lưu Scan {paper_format.code}",
+                            on_click=commit,
+                        ),
                     ],
                 ),
-            )
+            ),
         )
 
     def check_cell(record: dict) -> ft.DataCell:
         saved = {
             "checker_id": str(record.get("checker_id") or ""),
+            "check_date": record.get("check_date", "") or "",
             "check_pages": str(record.get("check_pages", 0) or 0),
         }
+        def check_line(icon: str, control: ft.Control) -> ft.Control:
+            return ft.Row(
+                spacing=6,
+                vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                controls=[
+                    ft.Icon(icon, size=14, color=TEXT_MUTED),
+                    control,
+                ],
+            )
+
+        check_column_width = column_width("check")
+        field_width = max(170, check_column_width - 58)
         checker = ft.Dropdown(
             dense=True,
-            width=158,
+            width=field_width,
             height=PAPER_FIELD_HEIGHT,
             value=saved["checker_id"],
-            label="Người Check",
-            content_padding=ft.Padding.symmetric(vertical=4, horizontal=8),
+            hint_text="Tên",
+            tooltip=personnel_name(saved["checker_id"]) or "Người check",
+            border=ft.InputBorder.NONE,
+            text_size=12,
+            content_padding=ft.Padding.symmetric(vertical=0, horizontal=0),
             options=[
                 ft.dropdown.Option(key="", text="--"),
                 *[
-                    ft.dropdown.Option(key=str(person.id), text=f"{person.personnel_code} - {person.full_name}")
+                    ft.dropdown.Option(key=str(person.id), text=person.full_name)
                     for person in personnel
                     if person.id is not None
                 ],
             ],
         )
+        check_date = ft.TextField(
+            value=iso_to_display(saved["check_date"]),
+            dense=True,
+            width=field_width,
+            height=PAPER_FIELD_HEIGHT,
+            hint_text=DISPLAY_DATE_HINT,
+            tooltip=f"Ngày thực hiện ({DISPLAY_DATE_HINT})",
+            border=ft.InputBorder.NONE,
+            text_size=12,
+            content_padding=ft.Padding.symmetric(vertical=0, horizontal=0),
+        )
         pages = ft.TextField(
             value=saved["check_pages"],
             dense=True,
             height=PAPER_FIELD_HEIGHT,
-            width=92,
-            label="Số Trang",
+            width=field_width,
+            hint_text="Trang",
+            tooltip="Số trang check",
             keyboard_type=ft.KeyboardType.NUMBER,
-            content_padding=ft.Padding.symmetric(vertical=4, horizontal=8),
+            border=ft.InputBorder.NONE,
+            text_size=12,
+            content_padding=ft.Padding.symmetric(vertical=0, horizontal=0),
         )
 
         def commit(_event=None) -> None:
+            try:
+                normalized_date = display_to_iso(check_date.value or "")
+            except ValueError as exc:
+                status_banner.value = str(exc)
+                status_banner.color = ft.Colors.ERROR
+                ctx.page.update()
+                return
             next_values = {
                 "checker_id": checker.value or "",
+                "check_date": normalized_date,
                 "check_pages": pages.value or "0",
             }
             if next_values == saved:
@@ -532,6 +980,7 @@ def build(ctx) -> ft.Control:
 
             def mutate(values: dict) -> None:
                 values["checker_id"] = optional_personnel_id(next_values["checker_id"])
+                values["check_date"] = next_values["check_date"]
                 values["check_pages"] = next_values["check_pages"]
 
             ok = save_inline(
@@ -543,79 +992,102 @@ def build(ctx) -> ft.Control:
                 saved.update(next_values)
             else:
                 checker.value = saved["checker_id"]
+                check_date.value = iso_to_display(saved["check_date"])
                 pages.value = saved["check_pages"]
 
         return ft.DataCell(
             ft.Container(
-                width=PAPER_CELL_WIDTH,
+                width=check_column_width,
                 height=PAPER_TABLE_ROW_HEIGHT - 14,
-                padding=ft.Padding.symmetric(vertical=6, horizontal=0),
-                content=ft.Column(
-                    spacing=6,
-                    tight=True,
+                padding=ft.Padding.symmetric(vertical=5, horizontal=6),
+                border_radius=8,
+                bgcolor=ft.Colors.with_opacity(0.025, ft.Colors.PRIMARY),
+                content=ft.Row(
+                    spacing=2,
+                    vertical_alignment=ft.CrossAxisAlignment.CENTER,
                     controls=[
-                        checker,
-                        ft.Row(
-                            spacing=4,
+                        ft.Column(
+                            spacing=1,
+                            tight=True,
+                            expand=True,
                             controls=[
-                                pages,
-                                ft.IconButton(
-                                    icon=ft.Icons.SAVE,
-                                    icon_size=18,
-                                    width=PAPER_SAVE_BUTTON_SIZE,
-                                    height=PAPER_SAVE_BUTTON_SIZE,
-                                    padding=0,
-                                    tooltip="Lưu Check hồ sơ",
-                                    on_click=commit,
-                                ),
+                                check_line(ft.Icons.PERSON_OUTLINE, checker),
+                                check_line(ft.Icons.FILTER_9_PLUS_OUTLINED, pages),
+                                check_line(ft.Icons.EVENT_OUTLINED, check_date),
                             ],
+                        ),
+                        ft.IconButton(
+                            icon=ft.Icons.SAVE_OUTLINED,
+                            icon_size=16,
+                            width=28,
+                            height=28,
+                            padding=0,
+                            tooltip="Lưu Check hồ sơ",
+                            on_click=commit,
                         ),
                     ],
                 ),
-            )
+            ),
         )
 
-    columns = [ft.DataColumn(ft.Text("STT"), numeric=True)]
+    column_specs: list[tuple[str, str, bool]] = [("stt", "STT", True)]
     if directory_levels:
-        columns.extend(
-            ft.DataColumn(ft.Text(level.display_name)) for level in directory_levels
+        column_specs.extend(
+            (f"level_{index}", level.display_name, False)
+            for index, level in enumerate(directory_levels)
         )
     else:
-        columns.append(ft.DataColumn(ft.Text("Mã hồ sơ")))
-    columns.extend(
+        column_specs.append(("record_key", "Mã hồ sơ", False))
+    column_specs.extend(
         [
             *[
-                ft.DataColumn(ft.Text(f"Scan {paper_format.code}"))
+                (f"scan_{paper_format.code}", f"Scan {paper_format.code}", False)
                 for paper_format in paper_formats
             ],
-            ft.DataColumn(ft.Text("Check hồ sơ")),
-            ft.DataColumn(ft.Text("Trạng thái hồ sơ")),
-            ft.DataColumn(ft.Text("Tình trạng backup")),
-            ft.DataColumn(ft.Text("Máy đang lưu")),
-            ft.DataColumn(ft.Text("Thao tác")),
+            ("check", "Check hồ sơ", False),
+            ("record_status", "Trạng thái hồ sơ", False),
+            ("backup_status", "Tình trạng backup", False),
+            ("client_codes", "Máy đang lưu", False),
+            ("actions", "Thao tác", False),
         ]
     )
+    columns = [
+        col(
+            label,
+            key,
+            next_key=column_specs[index + 1][0] if index + 1 < len(column_specs) else None,
+            numeric=numeric,
+        )
+        for index, (key, label, numeric) in enumerate(column_specs)
+    ]
 
     data_rows = []
     for row_offset, record in enumerate(records):
         record_parts = record["record_key"].replace("\\", "/").split("/")
         cells = [
-            ft.DataCell(ft.Text(str(page_index * PAGE_SIZE + row_offset + 1)))
+            cell(ft.Text(str(page_index * page_size + row_offset + 1), text_align=ft.TextAlign.CENTER), key="stt")
         ]
         if directory_levels:
             for index, _level in enumerate(directory_levels):
                 value = record_parts[index] if index < len(record_parts) else "—"
                 if index == len(directory_levels) - 1 and len(record_parts) > len(directory_levels):
                     value = "/".join(record_parts[index:])
-                cells.append(ft.DataCell(ft.Text(value)))
+                cells.append(
+                    cell(
+                        ft.Text(value, tooltip=value, text_align=ft.TextAlign.CENTER),
+                        key=f"level_{index}",
+                    )
+                )
         else:
             cells.append(
-                ft.DataCell(
+                cell(
                     ft.Text(
                         record["record_key"],
                         max_lines=2,
                         tooltip=record["record_key"],
-                    )
+                        text_align=ft.TextAlign.CENTER,
+                    ),
+                    key="record_key",
                 )
             )
         cells.extend(
@@ -626,7 +1098,7 @@ def build(ctx) -> ft.Control:
                 ],
                 check_cell(record),
                 record_status_cell(record),
-                ft.DataCell(
+                cell(
                     kit.badge(
                         BACKUP_STATUS_LABELS.get(
                             record["backup_status"], record["backup_status"]
@@ -634,12 +1106,21 @@ def build(ctx) -> ft.Control:
                         BACKUP_STATUS_COLORS.get(
                             record["backup_status"], "#9CA3AF"
                         ),
-                    )
+                    ),
+                    key="backup_status",
                 ),
-                ft.DataCell(ft.Text(record["client_codes"] or "—")),
-                ft.DataCell(
+                cell(
+                    ft.Text(
+                        record["client_codes"] or "—",
+                        tooltip=record["client_codes"] or "",
+                        text_align=ft.TextAlign.CENTER,
+                    ),
+                    key="client_codes",
+                ),
+                cell(
                     ft.Row(
                         spacing=2,
+                        alignment=ft.MainAxisAlignment.CENTER,
                         controls=[
                             ft.IconButton(
                                 icon=ft.Icons.FOLDER_OPEN,
@@ -650,7 +1131,8 @@ def build(ctx) -> ft.Control:
                                 ),
                             ),
                         ],
-                    )
+                    ),
+                    key="actions",
                 ),
             ]
         )
@@ -670,6 +1152,8 @@ def build(ctx) -> ft.Control:
     table = ft.DataTable(
         columns=columns,
         rows=data_rows,
+        width=actual_table_width(),
+        expand=True,
         data_row_min_height=PAPER_TABLE_ROW_HEIGHT,
         data_row_max_height=PAPER_TABLE_ROW_HEIGHT,
         heading_row_height=48,
@@ -677,18 +1161,16 @@ def build(ctx) -> ft.Control:
         horizontal_margin=8,
     )
     kit.style_table(table)
+    has_filters = any(str(value).strip() for value in filters.values())
     toolbar = kit.card(ft.Row(
         spacing=8,
         wrap=True,
         vertical_alignment=ft.CrossAxisAlignment.CENTER,
         controls=[
             ft.FilledButton(
-                "Thêm dòng",
-                icon=ft.Icons.ADD,
-                on_click=lambda _e: (
-                    state.__setitem__("adding", True),
-                    ctx.refresh(),
-                ),
+                "Thêm công việc mới",
+                icon=ft.Icons.ADD_TASK,
+                on_click=open_create_job_dialog,
             ),
             ft.IconButton(
                 icon=ft.Icons.CONTENT_COPY,
@@ -713,6 +1195,19 @@ def build(ctx) -> ft.Control:
                 disabled=not bool(state["search"]),
                 on_click=clear_search,
             ),
+            ft.Container(width=1, height=36, bgcolor=LINE),
+            record_key_filter,
+            *level_filter_fields,
+            client_filter,
+            record_status_filter,
+            backup_status_filter,
+            ft.FilledButton("Lọc cột", icon=ft.Icons.FILTER_ALT, on_click=apply_filters),
+            ft.OutlinedButton(
+                "Xóa lọc cột",
+                icon=ft.Icons.FILTER_ALT_OFF,
+                disabled=not has_filters,
+                on_click=clear_filters,
+            ),
             ft.IconButton(
                 icon=ft.Icons.REFRESH,
                 tooltip="Làm mới dữ liệu",
@@ -722,26 +1217,36 @@ def build(ctx) -> ft.Control:
         ],
     ), padding=12)
 
-    add_panel = build_add_panel() if state["adding"] else None
+    page_size_dropdown = ft.Dropdown(
+        label="Dòng/trang",
+        dense=True,
+        width=118,
+        value=str(page_size),
+        options=[
+            ft.dropdown.Option(key=str(option), text=str(option))
+            for option in PAGE_SIZE_OPTIONS
+        ],
+    )
+    page_size_dropdown.on_change = change_page_size
+
     if not records:
         empty_text = ft.Text(
             "Không tìm thấy hồ sơ phù hợp."
-            if state["search"]
+            if state["search"] or has_filters
             else "Hệ thống chưa ghi nhận hồ sơ nào cho dự án này.",
             color=TEXT_MUTED,
         )
         body: ft.Control = ft.Column(
             spacing=8,
-            controls=[*([add_panel] if add_panel else []), empty_text],
+            controls=[empty_text],
         )
     else:
-        start_row = page_index * PAGE_SIZE + 1
+        start_row = page_index * page_size + 1
         end_row = start_row + len(records) - 1
         body = ft.Column(
             expand=True,
             spacing=8,
             controls=[
-                *([add_panel] if add_panel else []),
                 ft.Row(
                     alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
                     controls=[
@@ -752,7 +1257,9 @@ def build(ctx) -> ft.Control:
                         ),
                         ft.Row(
                             spacing=2,
+                            vertical_alignment=ft.CrossAxisAlignment.CENTER,
                             controls=[
+                                page_size_dropdown,
                                 ft.IconButton(
                                     icon=ft.Icons.CHEVRON_LEFT,
                                     tooltip="Trang trước",
@@ -763,7 +1270,7 @@ def build(ctx) -> ft.Control:
                                 ft.IconButton(
                                     icon=ft.Icons.CHEVRON_RIGHT,
                                     tooltip="Trang sau",
-                                    disabled=(page_index + 1) * PAGE_SIZE >= total_rows,
+                                    disabled=(page_index + 1) * page_size >= total_rows,
                                     on_click=lambda _e: change_page(1),
                                 ),
                             ],
