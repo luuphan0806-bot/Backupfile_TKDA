@@ -57,15 +57,15 @@ def test_client_template_uses_import_headers(tmp_path: Path) -> None:
     ]
 
 
-def test_personnel_excel_import_and_export_sets_pin(tmp_path: Path) -> None:
+def test_personnel_excel_import_and_export(tmp_path: Path) -> None:
     db = Database(tmp_path / "app.sqlite3")
     project_id = _project(db, tmp_path)
     service = ConfigExcelService(db)
     source = tmp_path / "personnel.xlsx"
     workbook = Workbook()
     sheet = workbook.active
-    sheet.append(["personnel_code", "full_name", "role_name", "enabled", "pin"])
-    sheet.append(["nv01", "Nguyễn Văn A", "Scanner", 1, "123456"])
+    sheet.append(["personnel_code", "full_name", "enabled"])
+    sheet.append(["nv01", "Nguyễn Văn A", 1])
     workbook.save(source)
 
     count = service.import_personnel(project_id, source)
@@ -74,7 +74,6 @@ def test_personnel_excel_import_and_export_sets_pin(tmp_path: Path) -> None:
 
     assert count == 1
     assert people[0].personnel_code == "NV01"
-    assert db.verify_personnel_pin("PROJECT_ALPHA", "NV01", "123456")
     exported_book = load_workbook(exported, read_only=True)
     assert exported_book.active.max_row == 2
 
@@ -87,5 +86,5 @@ def test_personnel_template_uses_import_headers(tmp_path: Path) -> None:
     sheet = load_workbook(template, read_only=True).active
 
     assert [cell.value for cell in next(sheet.iter_rows(min_row=1, max_row=1))] == [
-        "personnel_code", "full_name", "role_name", "enabled", "pin"
+        "personnel_code", "full_name", "enabled"
     ]

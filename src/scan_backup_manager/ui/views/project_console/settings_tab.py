@@ -9,7 +9,6 @@ from ....models import (
     Client,
     DirectoryLevel,
     JobType,
-    MapfileProfile,
     PaperFormat,
     Personnel,
     Project,
@@ -19,6 +18,29 @@ from ... import kit
 from ...theme import LEVEL_LABELS, TEXT_MUTED
 
 LEVEL_TYPES = ["YEAR4", "ENUM", "INTEGER", "TEXT"]
+
+
+def _workstation_root_name(project_code: str) -> str:
+    clean = project_code.strip() or "Mã dự án"
+    return clean if clean.upper().startswith("CSDL_SOHOA_") else f"CSDL_SOHOA_{clean}"
+
+
+def _parse_unc_share(value: str) -> tuple[str, str]:
+    clean = value.strip().replace("/", "\\")
+    if not clean.startswith("\\\\"):
+        return "", clean.strip("\\")
+    parts = [part for part in clean.strip("\\").split("\\") if part]
+    if len(parts) < 2:
+        return (parts[0], "") if parts else ("", "")
+    return parts[0], parts[1]
+
+
+def _build_unc_share(ip_address: str, share_name: str) -> str:
+    ip = ip_address.strip().strip("\\/")
+    share = share_name.strip().strip("\\/")
+    if not ip or not share:
+        return ""
+    return f"\\\\{ip}\\{share}"
 
 
 def _build_project_section(ctx) -> ft.Control:
@@ -57,6 +79,50 @@ def _build_project_section(ctx) -> ft.Control:
     )
     level_values_field = ft.TextField(label="Giá trị hợp lệ (cách nhau bằng dấu phẩy)", width=280)
     levels_error = ft.Text("", color=ft.Colors.ERROR)
+    path_preview_text = ft.Text(
+        "",
+        size=13,
+        color=TEXT_MUTED,
+        selectable=True,
+        style=ft.TextStyle(font_family="Consolas"),
+    )
+    path_tree = ft.Column(spacing=4)
+
+    def project_structure_segments() -> list[str]:
+        return [f"[{level.display_name}]" for level in levels] + ["Tên file pdf"]
+
+    def build_path_text() -> str:
+        root = _workstation_root_name(code_field.value or "")
+        common = [root, "[Họ tên]", "[Ngày]", "[Nội dung công việc]"]
+        return "/".join([*common, *project_structure_segments()])
+
+    def refresh_path_preview() -> None:
+        path_preview_text.value = build_path_text()
+        tree_controls: list[ft.Control] = []
+        tree_segments = [
+            _workstation_root_name(code_field.value or ""),
+            "[Họ tên]",
+            "[Ngày]",
+            "[Nội dung công việc]",
+            *project_structure_segments(),
+        ]
+        for index, segment in enumerate(tree_segments):
+            tree_controls.append(
+                ft.Row(
+                    spacing=6,
+                    vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                    controls=[
+                        ft.Text("   " * index + ("└ " if index else ""), color=TEXT_MUTED),
+                        ft.Icon(
+                            ft.Icons.FOLDER_OUTLINED if index < len(tree_segments) - 1 else ft.Icons.PICTURE_AS_PDF_OUTLINED,
+                            size=16,
+                            color=ft.Colors.PRIMARY if index == 0 else TEXT_MUTED,
+                        ),
+                        ft.Text(segment, size=12),
+                    ],
+                )
+            )
+        path_tree.controls = tree_controls
 
     def add_level(_event) -> None:
         name = (level_name_field.value or "").strip()
@@ -87,6 +153,7 @@ def _build_project_section(ctx) -> ft.Control:
     levels_table = ft.DataTable(columns=[ft.DataColumn(ft.Text("Thứ tự")), ft.DataColumn(ft.Text("Tên")), ft.DataColumn(ft.Text("Kiểu")), ft.DataColumn(ft.Text("Giá trị hợp lệ")), ft.DataColumn(ft.Text(""))], rows=[])
 
     def _rebuild_levels_table() -> None:
+        refresh_path_preview()
         levels_table.rows = [
             ft.DataRow(
                 cells=[
@@ -101,6 +168,7 @@ def _build_project_section(ctx) -> ft.Control:
         ]
         ctx.page.update()
 
+    code_field.on_change = lambda _event: (refresh_path_preview(), ctx.page.update())
     _rebuild_levels_table()
 
     return ft.Column(
@@ -120,56 +188,48 @@ def _build_project_section(ctx) -> ft.Control:
                 ),
             ),
             kit.section(
-                "Cây thư mục chuẩn", "Thứ tự các tầng thư mục bắt buộc bên dưới mã dự án.",
-                ft.Column(
-                    spacing=10,
+                "Cấu trúc riêng từng dự án", "Phần thư mục nghiệp vụ riêng của dự án, nằm sau Họ tên / Ngày / Nội dung công việc.",
+                ft.Row(
+                    spacing=16,
+                    vertical_alignment=ft.CrossAxisAlignment.START,
                     controls=[
-                        ft.Row(controls=[level_name_field, level_type_dropdown, level_values_field, ft.FilledButton("Thêm tầng", on_click=add_level)], wrap=True),
-                        levels_error,
-                        kit.table_frame(levels_table),
-                        ft.FilledButton("Lưu cây thư mục", on_click=save_levels),
+                        ft.Container(
+                            expand=2,
+                            content=ft.Column(
+                                spacing=10,
+                                controls=[
+                                    ft.Row(controls=[level_name_field, level_type_dropdown, level_values_field, ft.FilledButton("Thêm tầng", on_click=add_level)], wrap=True),
+                                    levels_error,
+                                    kit.table_frame(levels_table),
+                                    ft.FilledButton("Lưu cây thư mục", on_click=save_levels),
+                                ],
+                            ),
+                        ),
+                        ft.Container(
+                            expand=1,
+                            padding=12,
+                            border_radius=8,
+                            border=ft.Border.all(1, ft.Colors.with_opacity(0.35, ft.Colors.PRIMARY)),
+                            bgcolor=ft.Colors.with_opacity(0.035, ft.Colors.PRIMARY),
+                            content=ft.Column(
+                                spacing=10,
+                                controls=[
+                                    ft.Text("Cây thư mục đầy đủ trên máy trạm", weight=ft.FontWeight.BOLD),
+                                    ft.Text(
+                                        "Cấu trúc chung: CSDL_SOHOA_<mã dự án>/[Họ tên]/[Ngày]/[Nội dung công việc]",
+                                        size=11,
+                                        color=TEXT_MUTED,
+                                    ),
+                                    path_preview_text,
+                                    ft.Divider(height=1),
+                                    path_tree,
+                                ],
+                            ),
+                        ),
                     ],
                 ),
             ),
         ],
-    )
-
-
-def _build_mapfile_section(ctx) -> ft.Control:
-    db = ctx.db
-    try:
-        profile = db.get_mapfile_profile(ctx.project_id)
-    except ValueError:
-        profile = MapfileProfile(None, ctx.project_id, "Default", "", "project", "year", "case_type", "case_number", "file_name")
-
-    sheet_field = ft.TextField(label="Tên trang tính", value=profile.sheet_name, width=160)
-    project_col = ft.TextField(label="Cột dự án", value=profile.project_column, width=120)
-    year_col = ft.TextField(label="Cột năm", value=profile.year_column, width=120)
-    type_col = ft.TextField(label="Cột nhóm hồ sơ", value=profile.case_type_column, width=120)
-    number_col = ft.TextField(label="Cột mã hồ sơ", value=profile.case_number_column, width=120)
-    file_col = ft.TextField(label="Cột tên tệp", value=profile.file_name_column, width=120)
-    status_text = ft.Text("", color=ft.Colors.PRIMARY)
-
-    def save_profile(_event) -> None:
-        db.save_mapfile_profile(
-            MapfileProfile(
-                profile.id, ctx.project_id, "Default", sheet_field.value or "",
-                project_col.value or "", year_col.value or "", type_col.value or "",
-                number_col.value or "", file_col.value or "",
-            )
-        )
-        status_text.value = "Đã lưu ánh xạ mapfile."
-        ctx.page.update()
-
-    return kit.section(
-        "Ánh xạ danh mục hồ sơ", "Khai báo trang tính và tên cột Excel tương ứng.",
-        ft.Column(
-            spacing=10,
-            controls=[
-                ft.Row(controls=[sheet_field, project_col, year_col, type_col, number_col, file_col], wrap=True),
-                ft.Row(controls=[ft.FilledButton("Lưu ánh xạ", on_click=save_profile), status_text]),
-            ],
-        ),
     )
 
 
@@ -240,31 +300,100 @@ def _build_paper_formats_section(ctx) -> ft.Control:
 def _build_clients_section(ctx) -> ft.Control:
     db = ctx.db
     excel = ConfigExcelService(db)
+    state = ctx.view_state.setdefault("settings_clients", {})
     code_field = ft.TextField(label="Mã máy trạm", width=160)
-    share_field = ft.TextField(label="Thư mục chia sẻ máy trạm", width=320)
+    ip_field = ft.TextField(label="IP máy trạm", width=180, hint_text="192.168.1.71")
+    share_name_field = ft.TextField(label="Thư mục share", width=220, hint_text="csdl_sohoa_demo")
+    share_preview = ft.Text("", color=TEXT_MUTED, selectable=True)
     notes_field = ft.TextField(label="Ghi chú", width=220)
     enabled_checkbox = ft.Checkbox(label="Kích hoạt", value=True)
     error_text = ft.Text("", color=ft.Colors.ERROR)
-    picker = ctx.view_state.setdefault("settings_clients", {}).get("_picker")
+    template_path = state.get("template_path", "")
+    picker = state.get("_picker")
     if picker is None:
         picker = ft.FilePicker()
-        ctx.view_state["settings_clients"]["_picker"] = picker
+        state["_picker"] = picker
     if picker not in ctx.page.services:
         ctx.page.services.append(picker)
+    open_template_button = ft.OutlinedButton(
+        "Mở file mẫu",
+        icon=ft.Icons.OPEN_IN_NEW,
+        visible=bool(template_path),
+    )
+
+    def open_path(path_text: str) -> None:
+        try:
+            path = Path(path_text)
+            if not path.exists():
+                raise FileNotFoundError(path)
+            import os
+
+            os.startfile(str(path))
+        except OSError as exc:
+            error_text.value = f"Không thể mở file: {exc}"
+            error_text.color = ft.Colors.ERROR
+            ctx.page.update()
+
+    open_template_button.on_click = lambda _event: open_path(str(state.get("template_path", "")))
+
+    def refresh_share_preview(_event=None) -> None:
+        share_preview.value = _build_unc_share(ip_field.value or "", share_name_field.value or "")
+        ctx.page.update()
+
+    ip_field.on_change = refresh_share_preview
+    share_name_field.on_change = refresh_share_preview
 
     def save_client(_event) -> None:
         code = (code_field.value or "").strip()
-        share = (share_field.value or "").strip()
-        if not code or not share:
-            error_text.value = "Cần nhập mã máy trạm và thư mục chia sẻ."
+        ip_address = (ip_field.value or "").strip()
+        share_name = (share_name_field.value or "").strip()
+        share = _build_unc_share(ip_address, share_name)
+        if not code or not ip_address or not share_name:
+            error_text.value = "Cần nhập mã máy trạm, IP và thư mục share."
             ctx.page.update()
             return
         db.save_client(Client(None, ctx.project_id, code, "", share, enabled_checkbox.value, notes_field.value or ""))
         ctx.refresh()
 
+    def edit_client(client: Client) -> None:
+        ip_address, share_name = _parse_unc_share(client.share_path)
+        code_field.value = client.client_code
+        ip_field.value = ip_address
+        share_name_field.value = share_name
+        notes_field.value = client.notes
+        enabled_checkbox.value = client.enabled
+        refresh_share_preview()
+        error_text.value = f"Đang sửa máy trạm {client.client_code}."
+        error_text.color = ft.Colors.PRIMARY
+        ctx.page.update()
+
     def delete_client(code: str) -> None:
         db.delete_client(ctx.project_id, code)
         ctx.refresh()
+
+    def test_client_connection(client: Client) -> None:
+        share_path = Path(client.share_path)
+        if not share_path.exists():
+            error_text.value = f"Không truy cập được: {client.share_path}"
+            error_text.color = ft.Colors.ERROR
+            ctx.page.update()
+            return
+        try:
+            import uuid
+
+            test_dir = share_path / f".scan_backup_write_test_{uuid.uuid4().hex[:8]}"
+            test_dir.mkdir()
+            test_dir.rmdir()
+        except PermissionError:
+            error_text.value = f"Kết nối được nhưng không có quyền ghi: {client.share_path}"
+            error_text.color = ft.Colors.ERROR
+        except OSError as exc:
+            error_text.value = f"Kết nối được nhưng kiểm tra quyền ghi thất bại: {exc}"
+            error_text.color = ft.Colors.ERROR
+        else:
+            error_text.value = f"Kết nối và quyền ghi OK: {client.share_path}"
+            error_text.color = ft.Colors.PRIMARY
+        ctx.page.update()
 
     async def import_excel(_event) -> None:
         result = await picker.pick_files(
@@ -296,20 +425,48 @@ def _build_clients_section(ctx) -> ft.Control:
         project = db.get_project(ctx.project_id)
         output_dir = Path(project.reports_dir if project else "data/reports")
         path = excel.export_client_template(output_dir)
+        state["template_path"] = str(path)
         error_text.value = f"Đã tạo file mẫu: {path}"
         error_text.color = ft.Colors.PRIMARY
+        open_template_button.visible = True
         ctx.page.update()
 
     clients = db.list_clients(ctx.project_id)
     table = ft.DataTable(
-        columns=[ft.DataColumn(ft.Text("Mã")), ft.DataColumn(ft.Text("Share")), ft.DataColumn(ft.Text("Ghi chú")), ft.DataColumn(ft.Text("Kích hoạt")), ft.DataColumn(ft.Text(""))],
+        columns=[
+            ft.DataColumn(ft.Text("Mã")),
+            ft.DataColumn(ft.Text("IP")),
+            ft.DataColumn(ft.Text("Thư mục share")),
+            ft.DataColumn(ft.Text("Đường dẫn UNC")),
+            ft.DataColumn(ft.Text("Ghi chú")),
+            ft.DataColumn(ft.Text("Kích hoạt")),
+            ft.DataColumn(ft.Text("Kiểm tra")),
+            ft.DataColumn(ft.Text("Sửa")),
+            ft.DataColumn(ft.Text("")),
+        ],
         rows=[
             ft.DataRow(
                 cells=[
                     ft.DataCell(ft.Text(c.client_code)),
+                    ft.DataCell(ft.Text(_parse_unc_share(c.share_path)[0] or "—")),
+                    ft.DataCell(ft.Text(_parse_unc_share(c.share_path)[1] or "—")),
                     ft.DataCell(ft.Text(c.share_path)),
                     ft.DataCell(ft.Text(c.notes)),
                     ft.DataCell(ft.Text("Có" if c.enabled else "Không")),
+                    ft.DataCell(
+                        ft.IconButton(
+                            icon=ft.Icons.LAN_OUTLINED,
+                            tooltip="Kiểm tra kết nối share",
+                            on_click=lambda _e, current=c: test_client_connection(current),
+                        )
+                    ),
+                    ft.DataCell(
+                        ft.IconButton(
+                            icon=ft.Icons.EDIT_OUTLINED,
+                            tooltip="Sửa máy trạm",
+                            on_click=lambda _e, current=c: edit_client(current),
+                        )
+                    ),
                     ft.DataCell(ft.IconButton(icon=ft.Icons.DELETE, on_click=lambda _e, code=c.client_code: delete_client(code))),
                 ]
             )
@@ -322,13 +479,23 @@ def _build_clients_section(ctx) -> ft.Control:
         ft.Column(
             spacing=10,
             controls=[
-                ft.Row(controls=[code_field, share_field, notes_field, enabled_checkbox], wrap=True),
+                ft.Row(controls=[code_field, ip_field, share_name_field, notes_field, enabled_checkbox], wrap=True),
+                ft.Row(
+                    spacing=6,
+                    vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                    controls=[
+                        ft.Icon(ft.Icons.LAN_OUTLINED, size=16, color=TEXT_MUTED),
+                        ft.Text("Đường dẫn share:", color=TEXT_MUTED),
+                        share_preview,
+                    ],
+                ),
                 error_text,
                 ft.Row(
                     wrap=True,
                     controls=[
                         ft.FilledButton("Thêm / cập nhật máy trạm", on_click=save_client),
                         ft.OutlinedButton("Tải file mẫu", icon=ft.Icons.DESCRIPTION_OUTLINED, on_click=export_template),
+                        open_template_button,
                         ft.OutlinedButton("Nhập Excel", icon=ft.Icons.UPLOAD_FILE, on_click=import_excel),
                         ft.OutlinedButton("Xuất Excel", icon=ft.Icons.DOWNLOAD, on_click=export_excel),
                     ],
@@ -342,34 +509,47 @@ def _build_clients_section(ctx) -> ft.Control:
 def _build_personnel_section(ctx) -> ft.Control:
     db = ctx.db
     excel = ConfigExcelService(db)
-    code_field = ft.TextField(label="Mã nhân sự", width=140)
-    name_field = ft.TextField(label="Họ tên", width=220)
-    role_field = ft.TextField(label="Vai trò/chức danh", width=200)
-    pin_field = ft.TextField(label="PIN khởi tạo/đặt lại (6 số)", width=200, password=True)
+    state = ctx.view_state.setdefault("settings_personnel", {})
+    code_field = ft.TextField(label="Mã nhân viên", width=160)
+    name_field = ft.TextField(label="Họ và tên", width=260)
     enabled_checkbox = ft.Checkbox(label="Kích hoạt", value=True)
     error_text = ft.Text("", color=ft.Colors.ERROR)
-    picker = ctx.view_state.setdefault("settings_personnel", {}).get("_picker")
+    template_path = state.get("template_path", "")
+    picker = state.get("_picker")
     if picker is None:
         picker = ft.FilePicker()
-        ctx.view_state["settings_personnel"]["_picker"] = picker
+        state["_picker"] = picker
     if picker not in ctx.page.services:
         ctx.page.services.append(picker)
+    open_template_button = ft.OutlinedButton(
+        "Mở file mẫu",
+        icon=ft.Icons.OPEN_IN_NEW,
+        visible=bool(template_path),
+    )
+
+    def open_path(path_text: str) -> None:
+        try:
+            path = Path(path_text)
+            if not path.exists():
+                raise FileNotFoundError(path)
+            import os
+
+            os.startfile(str(path))
+        except OSError as exc:
+            error_text.value = f"Không thể mở file: {exc}"
+            error_text.color = ft.Colors.ERROR
+            ctx.page.update()
+
+    open_template_button.on_click = lambda _event: open_path(str(state.get("template_path", "")))
 
     def save_personnel(_event) -> None:
         code = (code_field.value or "").strip()
         name = (name_field.value or "").strip()
         if not code or not name:
-            error_text.value = "Cần nhập mã nhân sự và họ tên."
+            error_text.value = "Cần nhập mã nhân viên và họ tên."
             ctx.page.update()
             return
-        personnel_id = db.save_personnel(Personnel(None, ctx.project_id, code, name, role_field.value or "", enabled_checkbox.value))
-        if pin_field.value:
-            try:
-                db.set_personnel_pin(personnel_id, pin_field.value, must_change=True)
-            except ValueError as exc:
-                error_text.value = str(exc)
-                ctx.page.update()
-                return
+        db.save_personnel(Personnel(None, ctx.project_id, code, name, "", enabled_checkbox.value))
         ctx.refresh()
 
     def delete_personnel(personnel_id: int) -> None:
@@ -406,19 +586,25 @@ def _build_personnel_section(ctx) -> ft.Control:
         project = db.get_project(ctx.project_id)
         output_dir = Path(project.reports_dir if project else "data/reports")
         path = excel.export_personnel_template(output_dir)
+        state["template_path"] = str(path)
         error_text.value = f"Đã tạo file mẫu: {path}"
         error_text.color = ft.Colors.PRIMARY
+        open_template_button.visible = True
         ctx.page.update()
 
     personnel = db.list_personnel(ctx.project_id)
     table = ft.DataTable(
-        columns=[ft.DataColumn(ft.Text("Mã")), ft.DataColumn(ft.Text("Họ tên")), ft.DataColumn(ft.Text("Vai trò")), ft.DataColumn(ft.Text("Kích hoạt")), ft.DataColumn(ft.Text(""))],
+        columns=[
+            ft.DataColumn(ft.Text("Mã nhân viên")),
+            ft.DataColumn(ft.Text("Họ và tên")),
+            ft.DataColumn(ft.Text("Kích hoạt")),
+            ft.DataColumn(ft.Text("")),
+        ],
         rows=[
             ft.DataRow(
                 cells=[
                     ft.DataCell(ft.Text(p.personnel_code)),
                     ft.DataCell(ft.Text(p.full_name)),
-                    ft.DataCell(ft.Text(p.role_name)),
                     ft.DataCell(ft.Text("Có" if p.enabled else "Không")),
                     ft.DataCell(ft.IconButton(icon=ft.Icons.DELETE, on_click=lambda _e, pid=p.id: delete_personnel(pid))),
                 ]
@@ -432,13 +618,14 @@ def _build_personnel_section(ctx) -> ft.Control:
         ft.Column(
             spacing=10,
             controls=[
-                ft.Row(controls=[code_field, name_field, role_field, pin_field, enabled_checkbox], wrap=True),
+                ft.Row(controls=[code_field, name_field, enabled_checkbox], wrap=True),
                 error_text,
                 ft.Row(
                     wrap=True,
                     controls=[
                         ft.FilledButton("Thêm / cập nhật nhân sự", on_click=save_personnel),
                         ft.OutlinedButton("Tải file mẫu", icon=ft.Icons.DESCRIPTION_OUTLINED, on_click=export_template),
+                        open_template_button,
                         ft.OutlinedButton("Nhập Excel", icon=ft.Icons.UPLOAD_FILE, on_click=import_excel),
                         ft.OutlinedButton("Xuất Excel", icon=ft.Icons.DOWNLOAD, on_click=export_excel),
                     ],
@@ -560,7 +747,6 @@ def build(ctx) -> ft.Control:
     state = ctx.view_state.setdefault("settings", {"tab": 0})
     tab_items = [
         ("Dự án & cây thư mục", ft.Icons.ACCOUNT_TREE_OUTLINED, _build_project_section),
-        ("Danh mục Excel", ft.Icons.TABLE_VIEW_OUTLINED, _build_mapfile_section),
         ("Khổ giấy", ft.Icons.DESCRIPTION_OUTLINED, _build_paper_formats_section),
         ("Máy trạm", ft.Icons.COMPUTER_OUTLINED, _build_clients_section),
         ("Nhân sự", ft.Icons.GROUP_OUTLINED, _build_personnel_section),
@@ -572,7 +758,8 @@ def build(ctx) -> ft.Control:
         state["tab"] = index
         ctx.refresh()
 
-    selected_index = int(state["tab"])
+    selected_index = min(int(state["tab"]), len(tab_items) - 1)
+    state["tab"] = selected_index
     selected_builder = tab_items[selected_index][2]
     tab_bar = kit.tab_bar(
         [(label, icon) for label, icon, _b in tab_items],

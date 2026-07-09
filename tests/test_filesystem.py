@@ -78,6 +78,35 @@ def test_discover_files_supports_exact_project_code(tmp_path: Path) -> None:
     assert discovered[0].project_code == "PROJECT_ALPHA"
 
 
+def test_discover_files_supports_workstation_common_tree(tmp_path: Path) -> None:
+    file_path = (
+        tmp_path
+        / "CSDL_SOHOA_PROJECT_ALPHA"
+        / "Nguyen Van A"
+        / "09-07-2026"
+        / "Scan A4"
+        / "2024"
+        / "DOC"
+        / "A-001"
+        / "scan.pdf"
+    )
+    file_path.parent.mkdir(parents=True)
+    file_path.write_bytes(b"ok")
+
+    discovered, invalid_rows = discover_files(
+        "SCAN01",
+        tmp_path,
+        1,
+        "PROJECT_ALPHA",
+        levels(category="DOC"),
+    )
+
+    assert invalid_rows == []
+    assert len(discovered) == 1
+    assert discovered[0].project_code == "PROJECT_ALPHA"
+    assert discovered[0].relative_project_path == Path("2024") / "DOC" / "A-001" / "scan.pdf"
+
+
 def test_similar_project_prefix_is_not_discovered(tmp_path: Path) -> None:
     file_path = tmp_path / "PROJECT_ALPHA_OLD" / "2024" / "DOC" / "A-001" / "scan.pdf"
     file_path.parent.mkdir(parents=True)

@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
 from openpyxl import load_workbook
 
 from .db import Database
-from .filesystem import find_project_roots
+from .filesystem import find_project_roots, workstation_project_root_name
 from .models import MapfileProfile
 
 
@@ -38,6 +39,13 @@ def normalize_dynamic_expected_path(
     file_name = file_name.strip()
     file_name = file_name if file_name.lower().endswith(".pdf") else f"{file_name}.pdf"
     return str(Path(project.strip()) / Path(*[value.strip() for value in directory_values]) / file_name)
+
+
+def safe_folder_name(value: str) -> str:
+    clean = str(value).strip() or "-"
+    for char in '\\/:*?"<>|':
+        clean = clean.replace(char, "-")
+    return clean
 
 
 class MapfileService:
@@ -201,6 +209,9 @@ class MapfileService:
         *,
         file_name: str = "1.pdf",
         client_code: str | None = None,
+        workstation_owner: str = "",
+        workstation_date: str = "",
+        workstation_task: str = "",
     ) -> int:
         project = self.db.get_project(project_id)
         if not project:
@@ -235,9 +246,16 @@ class MapfileService:
                 profile.id or 0,
                 "manual://system-mapfile",
             )
-        row_id = self.db.append_mapfile_row(import_id, raw, expected)
         if client_code:
-            self.create_client_record_folder(project_id, client_code, clean_parts)
+            self.create_client_record_folder(
+                project_id,
+                client_code,
+                clean_parts,
+                owner_name=workstation_owner,
+                work_date=workstation_date,
+                task_name=workstation_task,
+            )
+        row_id = self.db.append_mapfile_row(import_id, raw, expected)
         self.reconcile_row(project_id, row_id)
         self.db.record_audit(
             "MAPFILE_ROW_ADDED",
@@ -247,7 +265,14 @@ class MapfileService:
         return row_id
 
     def create_client_record_folder(
-        self, project_id: int, client_code: str, record_parts: list[str]
+        self,
+        project_id: int,
+        client_code: str,
+        record_parts: list[str],
+        *,
+        owner_name: str = "",
+        work_date: str = "",
+        task_name: str = "",
     ) -> Path:
         project = self.db.get_project(project_id)
         if not project:
@@ -262,10 +287,28 @@ class MapfileService:
         )
         if not client:
             raise ValueError("Máy nhận hồ sơ cứng không hợp lệ hoặc đang tắt.")
-        roots = find_project_roots(Path(client.share_path), project.project_code)
-        project_root = roots[0] if roots else Path(client.share_path) / project.project_code
-        target = project_root / Path(*record_parts)
-        target.mkdir(parents=True, exist_ok=True)
+        workstation_root_name = workstation_project_root_name(project.project_code)
+        roots = [
+            root
+            for root in find_project_roots(Path(client.share_path), project.project_code)
+            if root.name.upper() == workstation_root_name.upper()
+        ]
+        project_root = roots[0] if roots else Path(client.share_path) / workstation_root_name
+        common_parts = [
+            safe_folder_name(owner_name or "Họ tên"),
+            safe_folder_name(work_date or datetime.now().strftime("%d-%m-%Y")),
+            safe_folder_name(task_name or "Nội dung công việc"),
+        ]
+        target = project_root / Path(*common_parts) / Path(*record_parts)
+        try:
+            target.mkdir(parents=True, exist_ok=True)
+        except PermissionError as exc:
+            raise ValueError(
+                f"Không có quyền tạo thư mục trên máy trạm: {target}. "
+                "Vui lòng kiểm tra quyền ghi của tài khoản Windows đang chạy app/service."
+            ) from exc
+        except OSError as exc:
+            raise ValueError(f"Không thể tạo thư mục trên máy trạm: {target}. Lỗi: {exc}") from exc
         return target
 
     def duplicate_manual_record(self, project_id: int, source_record_key: str) -> str:
@@ -292,6 +335,7 @@ class MapfileService:
                 checker_id=workflow.get("checker_id"),
                 check_date=workflow.get("check_date", ""),
                 check_pages=workflow.get("check_pages", 0),
+                check_files=workflow.get("check_files", 0),
                 record_status=workflow.get("record_status", "NOT_STARTED"),
                 notes=workflow.get("notes", ""),
                 paper_statuses=[

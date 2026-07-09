@@ -261,30 +261,46 @@ class BackupManager:
             if not share.exists():
                 continue
             for project_root in find_project_roots(share, project.project_code):
-                candidate = project_root / relative_within_root
-                try:
-                    candidate.resolve().relative_to(project_root.resolve())
-                except ValueError:
-                    continue
-                if not candidate.is_file():
-                    continue
-                validation = validate_project_file(
-                    project_root, candidate, levels,
-                    numeric_sequence_check=numeric_sequence_check,
+                direct_candidate = project_root / relative_within_root
+                candidates = [direct_candidate]
+                candidates.extend(
+                    candidate
+                    for candidate in project_root.rglob(expected.name)
+                    if candidate.is_file()
                 )
-                if not validation.valid:
-                    continue
-                stat_result = candidate.stat()
-                item = DiscoveredFile(
-                    project_id=project_id,
-                    client_code=client.client_code,
-                    source_path=candidate,
-                    project_code=validation.project_code,
-                    relative_project_path=validation.relative_project_path or Path(),
-                    file_size=stat_result.st_size,
-                    source_mtime=stat_result.st_mtime,
-                )
-                return self.process_file(project, item)
+                seen: set[Path] = set()
+                for candidate in candidates:
+                    try:
+                        resolved = candidate.resolve()
+                        resolved.relative_to(project_root.resolve())
+                    except ValueError:
+                        continue
+                    if resolved in seen or not candidate.is_file():
+                        continue
+                    seen.add(resolved)
+                    validation = validate_project_file(
+                        project_root,
+                        candidate,
+                        levels,
+                        project_code=project.project_code,
+                        numeric_sequence_check=numeric_sequence_check,
+                    )
+                    if (
+                        not validation.valid
+                        or validation.relative_project_path != relative_within_root
+                    ):
+                        continue
+                    stat_result = candidate.stat()
+                    item = DiscoveredFile(
+                        project_id=project_id,
+                        client_code=client.client_code,
+                        source_path=candidate,
+                        project_code=validation.project_code,
+                        relative_project_path=validation.relative_project_path or Path(),
+                        file_size=stat_result.st_size,
+                        source_mtime=stat_result.st_mtime,
+                    )
+                    return self.process_file(project, item)
 
         raise FileNotFoundError(
             f"Could not find the physical file for mapfile row #{row_id} on any workstation"

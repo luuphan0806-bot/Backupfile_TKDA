@@ -52,6 +52,35 @@ def build(ctx) -> ft.Control:
         db.save_directory_levels(ctx.project_id, next_levels)
         ctx.refresh()
 
+    def clone_level(
+        level: DirectoryLevel,
+        *,
+        allowed_values: list[str] | None = None,
+        show_in_mapfile: bool | None = None,
+        mapfile_position: int | None = None,
+    ) -> DirectoryLevel:
+        return DirectoryLevel(
+            level.id,
+            level.project_id,
+            level.position,
+            level.display_name,
+            level.validation_type,
+            list(level.allowed_values if allowed_values is None else allowed_values),
+            level.show_in_mapfile if show_in_mapfile is None else show_in_mapfile,
+            level.mapfile_position if mapfile_position is None else mapfile_position,
+        )
+
+    def normalize_mapfile_positions(next_levels: list[DirectoryLevel]) -> list[DirectoryLevel]:
+        ordered = sorted(
+            next_levels,
+            key=lambda item: (int(item.mapfile_position or item.position), item.position),
+        )
+        positions = {id(level): index for index, level in enumerate(ordered, start=1)}
+        return [
+            clone_level(level, mapfile_position=positions[id(level)])
+            for level in next_levels
+        ]
+
     def select_level(index: int) -> None:
         state["selected_index"] = index
         ctx.refresh()
@@ -83,16 +112,41 @@ def build(ctx) -> ft.Control:
             ctx.page.update()
             return
         next_levels = list(levels)
-        next_levels[selected_index] = DirectoryLevel(
-            selected_level.id,
-            selected_level.project_id,
-            selected_level.position,
-            selected_level.display_name,
-            selected_level.validation_type,
-            values,
-        )
+        next_levels[selected_index] = clone_level(selected_level, allowed_values=values)
         error_text.value = ""
         status_text.value = f"Đã lưu {len(values)} giá trị cho {selected_level.display_name}."
+        save_levels(next_levels)
+
+    def update_mapfile_visibility(level_index: int, value: bool) -> None:
+        next_levels = list(levels)
+        next_levels[level_index] = clone_level(next_levels[level_index], show_in_mapfile=value)
+        save_levels(normalize_mapfile_positions(next_levels))
+
+    def move_mapfile_level(level_index: int, delta: int) -> None:
+        ordered_indices = sorted(
+            range(len(levels)),
+            key=lambda index: (
+                int(levels[index].mapfile_position or levels[index].position),
+                levels[index].position,
+            ),
+        )
+        current_order_index = ordered_indices.index(level_index)
+        target_order_index = current_order_index + delta
+        if target_order_index < 0 or target_order_index >= len(ordered_indices):
+            return
+        ordered_indices[current_order_index], ordered_indices[target_order_index] = (
+            ordered_indices[target_order_index],
+            ordered_indices[current_order_index],
+        )
+        position_by_index = {
+            index: order
+            for order, index in enumerate(ordered_indices, start=1)
+        }
+        next_levels = [
+            clone_level(level, mapfile_position=position_by_index[index])
+            for index, level in enumerate(levels)
+        ]
+        state["selected_index"] = level_index
         save_levels(next_levels)
 
     values_field = ft.TextField(
@@ -105,6 +159,14 @@ def build(ctx) -> ft.Control:
         hint_text="Dán từ Excel: mỗi giá trị một dòng",
     )
 
+    sorted_level_indices = sorted(
+        range(len(levels)),
+        key=lambda index: (
+            int(levels[index].mapfile_position or levels[index].position),
+            levels[index].position,
+        ),
+    )
+    order_by_index = {index: order for order, index in enumerate(sorted_level_indices, start=1)}
     level_cards = [
         ft.Container(
             padding=12,
@@ -132,9 +194,42 @@ def build(ctx) -> ft.Control:
                                 size=12,
                                 color=TEXT_MUTED,
                             ),
+                            ft.Text(
+                                f"Mapfile: thứ tự {order_by_index[index]}",
+                                size=11,
+                                color=TEXT_MUTED,
+                            ),
                         ],
                     ),
-                    kit.badge(str(len(level.allowed_values)), ft.Colors.PRIMARY),
+                    ft.Row(
+                        spacing=2,
+                        vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                        controls=[
+                            ft.Checkbox(
+                                value=level.show_in_mapfile,
+                                tooltip="Hiển thị cấp này trong Mapfile hệ thống",
+                                on_change=lambda event, i=index: update_mapfile_visibility(
+                                    i,
+                                    bool(event.control.value),
+                                ),
+                            ),
+                            ft.IconButton(
+                                icon=ft.Icons.ARROW_UPWARD,
+                                icon_size=16,
+                                tooltip="Đưa lên trong Mapfile",
+                                disabled=order_by_index[index] <= 1,
+                                on_click=lambda _event, i=index: move_mapfile_level(i, -1),
+                            ),
+                            ft.IconButton(
+                                icon=ft.Icons.ARROW_DOWNWARD,
+                                icon_size=16,
+                                tooltip="Đưa xuống trong Mapfile",
+                                disabled=order_by_index[index] >= len(levels),
+                                on_click=lambda _event, i=index: move_mapfile_level(i, 1),
+                            ),
+                            kit.badge(str(len(level.allowed_values)), ft.Colors.PRIMARY),
+                        ],
+                    ),
                 ],
             ),
         )
@@ -158,7 +253,21 @@ def build(ctx) -> ft.Control:
                     alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
                     vertical_alignment=ft.CrossAxisAlignment.CENTER,
                     controls=[
-                        ft.Text(f"{len(selected_level.allowed_values)} giá trị", color=TEXT_MUTED),
+                        ft.Row(
+                            spacing=12,
+                            vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                            controls=[
+                                ft.Text(f"{len(selected_level.allowed_values)} giá trị", color=TEXT_MUTED),
+                                ft.Checkbox(
+                                    label="Hiển thị trong Mapfile hệ thống",
+                                    value=selected_level.show_in_mapfile,
+                                    on_change=lambda event: update_mapfile_visibility(
+                                        selected_index,
+                                        bool(event.control.value),
+                                    ),
+                                ),
+                            ],
+                        ),
                         kit.primary_button("Lưu danh mục", icon=ft.Icons.SAVE, on_click=save_values),
                     ],
                 ),
@@ -177,7 +286,7 @@ def build(ctx) -> ft.Control:
         controls=[
             ft.Text(
                 "Quản lý danh mục hiển thị theo từng cấp trong cây thư mục của dự án. "
-                "Mỗi cấp tương ứng một cột hồ sơ; bấm vào cấp để sửa nhanh danh sách giá trị.",
+                "Mỗi cấp tương ứng một cột hồ sơ; tích chọn để đưa cấp đó vào phần cột động của Mapfile hệ thống.",
                 size=13,
                 color=TEXT_MUTED,
             ),

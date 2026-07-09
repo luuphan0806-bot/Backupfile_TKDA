@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sqlite3
+from datetime import datetime
 from pathlib import Path
 
 import pytest
@@ -62,6 +63,42 @@ def test_single_project_and_dynamic_levels(tmp_path: Path) -> None:
     ]
 
 
+def test_duplicate_project_code_shows_validation_error(tmp_path: Path) -> None:
+    db = Database(tmp_path / "app.sqlite3")
+    project = configure_project(db, tmp_path)
+
+    with pytest.raises(ValueError, match="Mã dự án 'PROJECT_ALPHA' đã tồn tại"):
+        db.create_project(
+            Project(
+                None,
+                "project_alpha",
+                "Duplicate",
+                str(tmp_path / "backup_2"),
+                str(tmp_path / "staging_2"),
+                str(tmp_path / "conflicts_2"),
+                str(tmp_path / "reports_2"),
+            )
+        )
+
+    other_id = db.create_project(
+        Project(
+            None,
+            "PROJECT_BETA",
+            "Project Beta",
+            str(tmp_path / "backup_b"),
+            str(tmp_path / "staging_b"),
+            str(tmp_path / "conflicts_b"),
+            str(tmp_path / "reports_b"),
+        )
+    )
+    other = db.get_project(other_id)
+    assert other is not None
+    other.project_code = project.project_code
+
+    with pytest.raises(ValueError, match="Mã dự án 'PROJECT_ALPHA' đã tồn tại"):
+        db.save_project(other)
+
+
 def test_directory_level_allowed_values_preserve_display_text(tmp_path: Path) -> None:
     db = Database(tmp_path / "app.sqlite3")
     project = configure_project(db, tmp_path)
@@ -77,6 +114,25 @@ def test_directory_level_allowed_values_preserve_display_text(tmp_path: Path) ->
     levels = db.list_directory_levels(project.id or 0)
     assert levels[0].allowed_values == ["Nguyễn Văn A"]
     assert levels[1].allowed_values == ["Hồ sơ"]
+
+
+def test_directory_levels_store_mapfile_display_settings(tmp_path: Path) -> None:
+    db = Database(tmp_path / "app.sqlite3")
+    project = configure_project(db, tmp_path)
+    db.save_directory_levels(
+        project.id or 0,
+        [
+            DirectoryLevel(None, project.id or 0, 1, "Năm", "YEAR4", ["2024"], True, 2),
+            DirectoryLevel(None, project.id or 0, 2, "Loại hồ sơ", "ENUM", ["DOC"], False, 1),
+        ],
+    )
+
+    levels = db.list_directory_levels(project.id or 0)
+
+    assert levels[0].show_in_mapfile is True
+    assert levels[0].mapfile_position == 2
+    assert levels[1].show_in_mapfile is False
+    assert levels[1].mapfile_position == 1
 
 
 def test_enum_directory_level_can_start_without_catalog_values(tmp_path: Path) -> None:
@@ -375,4 +431,14 @@ def test_project_job_types_can_be_renamed_and_used_for_manual_work(tmp_path: Pat
     )
 
     assert task_id > 0
-    assert (share / project.project_code / "2026" / "100" / "DOC" / "A-001").is_dir()
+    assert (
+        share
+        / "CSDL_SOHOA_PROJECT_ALPHA"
+        / "Họ tên"
+        / datetime.now().strftime("%d-%m-%Y")
+        / "Nội dung công việc"
+        / "2026"
+        / "100"
+        / "DOC"
+        / "A-001"
+    ).is_dir()

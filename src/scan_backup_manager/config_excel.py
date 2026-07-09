@@ -10,7 +10,8 @@ from .models import Client, Personnel
 
 
 CLIENT_HEADERS = ["client_code", "share_path", "enabled", "notes"]
-PERSONNEL_HEADERS = ["personnel_code", "full_name", "role_name", "enabled", "pin"]
+PERSONNEL_HEADERS = ["personnel_code", "full_name", "enabled"]
+PERSONNEL_IMPORT_HEADERS = ["personnel_code", "full_name", "enabled"]
 
 
 def _normalize_cell(value: Any) -> str:
@@ -75,8 +76,8 @@ class ConfigExcelService:
         sheet = workbook.active
         sheet.title = "Nhan su"
         sheet.append(PERSONNEL_HEADERS)
-        sheet.append(["NV001", "Nguyễn Văn A", "Nhân sự scan", 1, "123456"])
-        sheet.append(["", "", "", "", ""])
+        sheet.append(["NV001", "Nguyễn Văn A", 1])
+        sheet.append(["", "", ""])
         workbook.save(path)
         return path
 
@@ -129,16 +130,14 @@ class ConfigExcelService:
             sheet.append([
                 person.personnel_code,
                 person.full_name,
-                person.role_name,
                 1 if person.enabled else 0,
-                "",
             ])
         workbook.save(path)
         return path
 
     def import_personnel(self, project_id: int, path: Path) -> int:
         count = 0
-        for row in _read_rows(path, PERSONNEL_HEADERS):
+        for row in _read_rows(path, PERSONNEL_IMPORT_HEADERS):
             code = row.get("personnel_code", "").strip()
             full_name = row.get("full_name", "").strip()
             if not code or not full_name:

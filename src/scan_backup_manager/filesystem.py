@@ -11,6 +11,16 @@ from pathlib import Path
 
 from .models import DirectoryLevel, DiscoveredFile, ValidationResult
 
+WORKSTATION_ROOT_PREFIX = "CSDL_SOHOA_"
+WORKSTATION_COMMON_LEVEL_COUNT = 3
+
+
+def workstation_project_root_name(project_code: str) -> str:
+    clean = project_code.strip()
+    if clean.upper().startswith(WORKSTATION_ROOT_PREFIX):
+        return clean
+    return f"{WORKSTATION_ROOT_PREFIX}{clean}"
+
 
 def sha256_file(path: Path, chunk_size: int = 1024 * 1024) -> str:
     digest = hashlib.sha256()
@@ -47,14 +57,23 @@ def find_project_roots(root: Path, project_code: str) -> list[Path]:
     if not root.exists():
         return roots
     normalized_code = project_code.strip().upper()
+    workstation_code = workstation_project_root_name(project_code).upper()
     if not normalized_code:
         return roots
     for current, dirnames, _filenames in os.walk(root):
         current_path = Path(current)
-        matching = [name for name in dirnames if name.upper() == normalized_code]
+        matching = [
+            name
+            for name in dirnames
+            if name.upper() in {normalized_code, workstation_code}
+        ]
         for name in matching:
             roots.append(current_path / name)
-        dirnames[:] = [name for name in dirnames if name.upper() != normalized_code]
+        dirnames[:] = [
+            name
+            for name in dirnames
+            if name.upper() not in {normalized_code, workstation_code}
+        ]
     return sorted(roots)
 
 
@@ -63,6 +82,7 @@ def validate_project_file(
     file_path: Path,
     levels: list[DirectoryLevel],
     *,
+    project_code: str | None = None,
     numeric_sequence_check: bool = False,
 ) -> ValidationResult:
     try:
@@ -71,6 +91,21 @@ def validate_project_file(
         return ValidationResult(False, "File is not inside project root")
 
     parts = relative.parts
+    output_project_code = project_root.name
+    normalized_project = (project_code or project_root.name).strip()
+    workstation_root = workstation_project_root_name(normalized_project)
+    is_workstation_tree = (
+        project_root.name.upper() == workstation_root.upper()
+        and project_root.name.upper() != normalized_project.upper()
+    )
+    if is_workstation_tree:
+        if len(parts) <= WORKSTATION_COMMON_LEVEL_COUNT:
+            return ValidationResult(
+                False,
+                "Expected Họ tên/Ngày/Nội dung công việc before project structure",
+            )
+        parts = parts[WORKSTATION_COMMON_LEVEL_COUNT:]
+        output_project_code = normalized_project
     if len(parts) != len(levels) + 1:
         expected = "/".join(level.display_name for level in levels)
         return ValidationResult(False, f"Expected {expected}/file.pdf")
@@ -98,8 +133,8 @@ def validate_project_file(
 
     return ValidationResult(
         True,
-        project_code=project_root.name,
-        relative_project_path=relative,
+        project_code=output_project_code,
+        relative_project_path=Path(*parts),
     )
 
 
@@ -122,6 +157,7 @@ def discover_files(
                 project_root,
                 file_path,
                 levels,
+                project_code=project_code,
                 numeric_sequence_check=numeric_sequence_check,
             )
             if not result.valid:

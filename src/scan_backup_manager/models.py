@@ -28,6 +28,8 @@ class DirectoryLevel:
     display_name: str
     validation_type: LevelType
     allowed_values: list[str]
+    show_in_mapfile: bool = True
+    mapfile_position: int = 0
 
 
 @dataclass(slots=True)

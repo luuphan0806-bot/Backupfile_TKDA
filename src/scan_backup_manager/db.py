@@ -231,6 +231,8 @@ class Database:
                 validation_type TEXT NOT NULL
                     CHECK(validation_type IN ('YEAR4', 'ENUM', 'INTEGER', 'TEXT')),
                 allowed_values_json TEXT NOT NULL DEFAULT '[]',
+                show_in_mapfile INTEGER NOT NULL DEFAULT 1,
+                mapfile_position INTEGER NOT NULL DEFAULT 0,
                 FOREIGN KEY(project_id) REFERENCES projects(id) ON DELETE CASCADE,
                 UNIQUE(project_id, position)
             );
@@ -321,6 +323,7 @@ class Database:
                 checker_id INTEGER,
                 check_date TEXT NOT NULL DEFAULT '',
                 check_pages INTEGER NOT NULL DEFAULT 0,
+                check_files INTEGER NOT NULL DEFAULT 0,
                 record_status TEXT NOT NULL DEFAULT 'NOT_STARTED',
                 notes TEXT NOT NULL DEFAULT '',
                 created_at TEXT NOT NULL,
@@ -672,6 +675,22 @@ class Database:
         }
         if "check_pages" not in workflow_columns:
             conn.execute("ALTER TABLE record_workflows ADD COLUMN check_pages INTEGER NOT NULL DEFAULT 0")
+        if "check_files" not in workflow_columns:
+            conn.execute("ALTER TABLE record_workflows ADD COLUMN check_files INTEGER NOT NULL DEFAULT 0")
+        level_columns = {
+            row[1] for row in conn.execute("PRAGMA table_info(project_directory_levels)").fetchall()
+        }
+        if "show_in_mapfile" not in level_columns:
+            conn.execute("ALTER TABLE project_directory_levels ADD COLUMN show_in_mapfile INTEGER NOT NULL DEFAULT 1")
+        if "mapfile_position" not in level_columns:
+            conn.execute("ALTER TABLE project_directory_levels ADD COLUMN mapfile_position INTEGER NOT NULL DEFAULT 0")
+        conn.execute(
+            """
+            UPDATE project_directory_levels
+            SET mapfile_position=position
+            WHERE mapfile_position IS NULL OR mapfile_position=0
+            """
+        )
         conn.execute(
             """
             CREATE TABLE IF NOT EXISTS project_job_types(
@@ -885,33 +904,48 @@ class Database:
             raise ValueError("All project directories are required")
         now = utc_now()
         with self.connect() as conn:
+            duplicate = conn.execute(
+                """
+                SELECT id FROM projects
+                WHERE project_code=? AND (? IS NULL OR id<>?)
+                """,
+                (code, project.id, project.id),
+            ).fetchone()
+            if duplicate:
+                raise ValueError(f"Mã dự án '{code}' đã tồn tại.")
             if project.id is not None:
-                conn.execute(
+                try:
+                    conn.execute(
+                        """
+                        UPDATE projects SET project_code=?, display_name=?, backup_root=?,
+                            staging_dir=?, conflict_archive_dir=?, reports_dir=?, enabled=?, updated_at=?
+                        WHERE id=?
+                        """,
+                        (
+                            code, project.display_name.strip(), project.backup_root.strip(),
+                            project.staging_dir.strip(), project.conflict_archive_dir.strip(),
+                            project.reports_dir.strip(), int(project.enabled), now, project.id,
+                        ),
+                    )
+                except sqlite3.IntegrityError as exc:
+                    raise ValueError(f"Mã dự án '{code}' đã tồn tại.") from exc
+                return project.id
+            try:
+                cur = conn.execute(
                     """
-                    UPDATE projects SET project_code=?, display_name=?, backup_root=?,
-                        staging_dir=?, conflict_archive_dir=?, reports_dir=?, enabled=?, updated_at=?
-                    WHERE id=?
+                    INSERT INTO projects(
+                        project_code, display_name, backup_root, staging_dir,
+                        conflict_archive_dir, reports_dir, enabled, created_at, updated_at
+                    ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         code, project.display_name.strip(), project.backup_root.strip(),
                         project.staging_dir.strip(), project.conflict_archive_dir.strip(),
-                        project.reports_dir.strip(), int(project.enabled), now, project.id,
+                        project.reports_dir.strip(), int(project.enabled), now, now,
                     ),
                 )
-                return project.id
-            cur = conn.execute(
-                """
-                INSERT INTO projects(
-                    project_code, display_name, backup_root, staging_dir,
-                    conflict_archive_dir, reports_dir, enabled, created_at, updated_at
-                ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    code, project.display_name.strip(), project.backup_root.strip(),
-                    project.staging_dir.strip(), project.conflict_archive_dir.strip(),
-                    project.reports_dir.strip(), int(project.enabled), now, now,
-                ),
-            )
+            except sqlite3.IntegrityError as exc:
+                raise ValueError(f"Mã dự án '{code}' đã tồn tại.") from exc
             return int(cur.lastrowid)
 
     def create_project(self, project: Project) -> int:
@@ -1025,6 +1059,8 @@ class Database:
             DirectoryLevel(
                 row["id"], row["project_id"], row["position"], row["display_name"],
                 row["validation_type"], json.loads(row["allowed_values_json"]),
+                bool(row["show_in_mapfile"]),
+                int(row["mapfile_position"] or row["position"]),
             )
             for row in rows
         ]
@@ -1051,12 +1087,15 @@ class Database:
                 conn.execute(
                     """
                     INSERT INTO project_directory_levels(
-                        project_id, position, display_name, validation_type, allowed_values_json
-                    ) VALUES(?, ?, ?, ?, ?)
+                        project_id, position, display_name, validation_type,
+                        allowed_values_json, show_in_mapfile, mapfile_position
+                    ) VALUES(?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         project_id, position, display_name, level.validation_type,
                         json.dumps(allowed, ensure_ascii=False),
+                        int(level.show_in_mapfile),
+                        int(level.mapfile_position or position),
                     ),
                 )
 
@@ -1556,21 +1595,15 @@ class Database:
             ).fetchall()
             return rows, total
 
-    def list_system_records_page(
-        self,
+    @staticmethod
+    def _system_records_filter(
         project_id: int,
         *,
-        limit: int = 50,
-        offset: int = 0,
         search: str = "",
         filters: dict[str, str] | None = None,
-    ) -> tuple[list[dict[str, Any]], int]:
+    ) -> tuple[str, dict[str, Any], str]:
         where = ["rk.record_key<>''"]
-        params: dict[str, Any] = {
-            "project_id": project_id,
-            "limit": limit,
-            "offset": offset,
-        }
+        params: dict[str, Any] = {"project_id": project_id}
         active_filters = {
             key: str(value).strip()
             for key, value in (filters or {}).items()
@@ -1648,6 +1681,22 @@ class Database:
                 GROUP BY record_key
             )
         """
+        return clause, params, cte
+
+    def list_system_records_page(
+        self,
+        project_id: int,
+        *,
+        limit: int = 50,
+        offset: int = 0,
+        search: str = "",
+        filters: dict[str, str] | None = None,
+    ) -> tuple[list[dict[str, Any]], int]:
+        clause, params, cte = self._system_records_filter(
+            project_id, search=search, filters=filters
+        )
+        params["limit"] = limit
+        params["offset"] = offset
         with self.connect() as conn:
             total = int(
                 conn.execute(
@@ -1677,6 +1726,7 @@ class Database:
                     checker.full_name AS checker_name,
                     rw.check_date,
                     COALESCE(rw.check_pages, 0) AS check_pages,
+                    COALESCE(rw.check_files, 0) AS check_files,
                     COALESCE(rw.record_status, 'NOT_STARTED') AS record_status,
                     COALESCE(rw.notes, '') AS workflow_notes,
                     COALESCE(bs.backup_status, 'NOT_BACKED_UP') AS backup_status
@@ -1729,6 +1779,78 @@ class Database:
                 )
             return result, total
 
+    def get_system_records_summary(
+        self,
+        project_id: int,
+        *,
+        search: str = "",
+        filters: dict[str, str] | None = None,
+    ) -> dict[str, Any]:
+        """Aggregate stats over the entire filtered record set (not just the
+        current page), used for the mapfile table's per-column header totals."""
+        clause, params, cte = self._system_records_filter(
+            project_id, search=search, filters=filters
+        )
+        with self.connect() as conn:
+            record_keys = [
+                row["record_key"]
+                for row in conn.execute(
+                    f"""{cte}
+                    SELECT rk.record_key
+                    FROM record_keys rk
+                    LEFT JOIN backup_summary bs ON bs.record_key=rk.record_key
+                    LEFT JOIN record_workflows rw
+                        ON rw.project_id=:project_id AND rw.record_key=rk.record_key
+                    WHERE {clause}
+                    """,
+                    params,
+                ).fetchall()
+            ]
+            check_row = conn.execute(
+                f"""{cte}
+                SELECT
+                    COALESCE(SUM(rw.check_pages), 0) AS check_pages,
+                    COALESCE(SUM(rw.check_files), 0) AS check_files
+                FROM record_keys rk
+                LEFT JOIN backup_summary bs ON bs.record_key=rk.record_key
+                LEFT JOIN record_workflows rw
+                    ON rw.project_id=:project_id AND rw.record_key=rk.record_key
+                WHERE {clause}
+                """,
+                params,
+            ).fetchone()
+            paper_rows = conn.execute(
+                f"""{cte}
+                SELECT
+                    pf.code AS code,
+                    COALESCE(SUM(rps.scan_pages), 0) AS scan_pages,
+                    COALESCE(SUM(rps.scan_files), 0) AS scan_files
+                FROM record_keys rk
+                LEFT JOIN backup_summary bs ON bs.record_key=rk.record_key
+                LEFT JOIN record_workflows rw
+                    ON rw.project_id=:project_id AND rw.record_key=rk.record_key
+                LEFT JOIN record_paper_statuses rps ON rps.record_id=rw.id
+                LEFT JOIN paper_formats pf
+                    ON pf.id=rps.paper_format_id AND pf.project_id=:project_id AND pf.enabled=1
+                WHERE {clause}
+                GROUP BY pf.code
+                """,
+                params,
+            ).fetchall()
+        return {
+            "record_keys": record_keys,
+            "check_pages": int(check_row["check_pages"]),
+            "check_files": int(check_row["check_files"]),
+            "paper_totals": {
+                row["code"]: {
+                    "scan_pages": int(row["scan_pages"]),
+                    "scan_files": int(row["scan_files"]),
+                }
+                for row in paper_rows
+                if row["code"] is not None
+            },
+        }
+
     def get_record_workflow(
         self, project_id: int, record_key: str
     ) -> dict[str, Any]:
@@ -1756,6 +1878,7 @@ class Database:
                     "checker_id": None,
                     "check_date": "",
                     "check_pages": 0,
+                    "check_files": 0,
                     "record_status": "NOT_STARTED",
                     "notes": "",
                 }
@@ -1793,6 +1916,7 @@ class Database:
         checker_id: int | None,
         check_date: str,
         check_pages: int | str = 0,
+        check_files: int | str = 0,
         record_status: str,
         notes: str,
         paper_statuses: list[dict[str, Any]],
@@ -1806,10 +1930,11 @@ class Database:
         check_date = normalize_system_date(check_date, "Ngày Check")
         try:
             normalized_check_pages = int(check_pages or 0)
+            normalized_check_files = int(check_files or 0)
         except (TypeError, ValueError) as exc:
-            raise ValueError("Số trang check phải là số nguyên.") from exc
-        if normalized_check_pages < 0:
-            raise ValueError("Số trang check không được âm.")
+            raise ValueError("Số trang/số file check phải là số nguyên.") from exc
+        if normalized_check_pages < 0 or normalized_check_files < 0:
+            raise ValueError("Số trang/số file check không được âm.")
         format_ids = {int(item["paper_format_id"]) for item in paper_statuses}
         with self.connect() as conn:
             valid_formats = {
@@ -1890,14 +2015,15 @@ class Database:
                 """
                 INSERT INTO record_workflows(
                     project_id, record_key, scanner_id, scan_date, checker_id,
-                    check_date, check_pages, record_status, notes, created_at, updated_at
-                ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    check_date, check_pages, check_files, record_status, notes, created_at, updated_at
+                ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(project_id, record_key) DO UPDATE SET
                     scanner_id=excluded.scanner_id,
                     scan_date=excluded.scan_date,
                     checker_id=excluded.checker_id,
                     check_date=excluded.check_date,
                     check_pages=excluded.check_pages,
+                    check_files=excluded.check_files,
                     record_status=excluded.record_status,
                     notes=excluded.notes,
                     updated_at=excluded.updated_at
@@ -1910,6 +2036,7 @@ class Database:
                     checker_id,
                     check_date.strip(),
                     normalized_check_pages,
+                    normalized_check_files,
                     record_status,
                     notes.strip(),
                     now,

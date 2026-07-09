@@ -1,3 +1,4 @@
+from datetime import datetime
 from pathlib import Path
 
 from scan_backup_manager.db import Database
@@ -219,7 +220,16 @@ def test_manual_record_can_create_client_folder(tmp_path: Path) -> None:
         client_code="SCAN01",
     )
 
-    assert (share / "PROJECT_ALPHA" / "2026" / "HS" / "010").is_dir()
+    assert (
+        share
+        / "CSDL_SOHOA_PROJECT_ALPHA"
+        / "Họ tên"
+        / datetime.now().strftime("%d-%m-%Y")
+        / "Nội dung công việc"
+        / "2026"
+        / "HS"
+        / "010"
+    ).is_dir()
 
 
 def test_project_can_enable_subset_of_paper_formats(tmp_path: Path) -> None:
