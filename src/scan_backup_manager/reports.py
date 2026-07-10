@@ -24,6 +24,10 @@ def _write_rows(sheet: Worksheet, headers: list[str], rows: Iterable[dict[str, o
         sheet.column_dimensions[column_cells[0].column_letter].width = min(max(max_length + 2, 12), 60)
 
 
+def _kind_label(kind: str) -> str:
+    return "Check" if kind == "CHECK" else "Scan"
+
+
 class ReportService:
     def __init__(self, db: Database):
         self.db = db
@@ -208,6 +212,104 @@ class ReportService:
         workbook.save(output)
         self.db.record_audit(
             "STATISTICS_REPORT_EXPORTED", f"Exported statistics report to {output}",
+            project_id=project_id,
+        )
+        return output
+
+    def export_attendance_report(
+        self, project_id: int, date_from: str, date_to: str, output_dir: Path | None = None
+    ) -> Path:
+        project = self.db.get_project(project_id)
+        if not project:
+            raise ValueError(f"Project not found: {project_id}")
+        output_dir = output_dir or Path(project.reports_dir)
+        output_dir.mkdir(parents=True, exist_ok=True)
+
+        stats = StatisticsService(self.db)
+        details = stats.personnel_daily_job_details(project_id, date_from, date_to)
+        workbook = Workbook()
+
+        sheet = workbook.active
+        sheet.title = "Cham cong"
+        _write_rows(
+            sheet,
+            [
+                "day",
+                "personnel_code",
+                "full_name",
+                "sequence_number",
+                "job_title",
+                "task_kind",
+                "quantity",
+                "completed_count",
+                "started_at",
+                "last_updated_at",
+            ],
+            [
+                {
+                    "day": row.day,
+                    "personnel_code": row.personnel_code,
+                    "full_name": row.full_name,
+                    "sequence_number": row.sequence_number,
+                    "job_title": row.job_title,
+                    "task_kind": _kind_label(row.task_kind),
+                    "quantity": row.quantity,
+                    "completed_count": row.completed_count,
+                    "started_at": row.started_at,
+                    "last_updated_at": row.last_updated_at,
+                }
+                for row in details
+            ],
+        )
+
+        summary: dict[tuple[str, str, str], dict[str, object]] = {}
+        for row in details:
+            key = (row.day, row.personnel_code, row.full_name)
+            bucket = summary.setdefault(
+                key,
+                {
+                    "day": row.day,
+                    "personnel_code": row.personnel_code,
+                    "full_name": row.full_name,
+                    "job_count": 0,
+                    "total_quantity": 0,
+                    "completed_count": 0,
+                    "first_started_at": row.started_at,
+                },
+            )
+            bucket["job_count"] = int(bucket["job_count"]) + 1
+            bucket["total_quantity"] = int(bucket["total_quantity"]) + row.quantity
+            bucket["completed_count"] = int(bucket["completed_count"]) + row.completed_count
+            first_started = str(bucket["first_started_at"] or "")
+            if row.started_at and (not first_started or row.started_at < first_started):
+                bucket["first_started_at"] = row.started_at
+
+        summary_sheet = workbook.create_sheet("Tong hop")
+        _write_rows(
+            summary_sheet,
+            [
+                "day",
+                "personnel_code",
+                "full_name",
+                "job_count",
+                "total_quantity",
+                "completed_count",
+                "first_started_at",
+            ],
+            [
+                summary[key]
+                for key in sorted(summary, key=lambda item: (item[0], item[2], item[1]))
+            ],
+        )
+
+        output = (
+            output_dir
+            / f"attendance_report_{date_from}_{date_to}_{datetime.now():%Y%m%d_%H%M%S}.xlsx"
+        )
+        workbook.save(output)
+        self.db.record_audit(
+            "ATTENDANCE_REPORT_EXPORTED",
+            f"Exported attendance report to {output}",
             project_id=project_id,
         )
         return output

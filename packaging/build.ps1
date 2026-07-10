@@ -1,22 +1,27 @@
-# Builds a standalone Windows executable via `flet pack` (PyInstaller-based).
-# Run from the repository root after `pip install -e ".[dev,build]"`.
-#
-# For a Flutter-native build instead, use `flet build windows` (requires
-# Visual Studio "Desktop development with C++" workload + the Flutter SDK).
+# Builds standalone Windows executables.
+# Run from the repository root after:
+#   python -m pip install -e ".[dev,build]"
 
-flet pack src/scan_backup_manager/ui/app.py -n ScanBackupManager --distpath dist
+$ErrorActionPreference = "Stop"
+
+flet pack src/scan_backup_manager/ui/app.py -n ScanBackupManager --distpath dist -y
 pyinstaller --noconfirm --onefile --name ScanBackupService service_main.py --distpath dist --hidden-import win32timezone
 
-$isccCandidates = @(
-    (Get-Command iscc -ErrorAction SilentlyContinue).Source,
+$isccCandidates = @()
+$isccCommand = Get-Command iscc -ErrorAction SilentlyContinue
+if ($isccCommand) {
+    $isccCandidates += $isccCommand.Source
+}
+$isccCandidates += @(
     "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe",
     "$env:ProgramFiles\Inno Setup 6\ISCC.exe",
     "$env:LOCALAPPDATA\Programs\Inno Setup 6\ISCC.exe"
-) | Where-Object { $_ -and (Test-Path $_) }
+)
 
-if ($isccCandidates) {
-    & $isccCandidates[0] ".\packaging\installer.iss"
+$isccPath = $isccCandidates | Where-Object { $_ -and (Test-Path $_) } | Select-Object -First 1
+if ($isccPath) {
+    & $isccPath ".\packaging\installer.iss"
 } else {
-    Write-Warning "Chưa cài Inno Setup. Hai file EXE đã được tạo trong dist\, nhưng chưa tạo bộ cài."
-    Write-Host "Tải Inno Setup 6 tại: https://jrsoftware.org/isdl.php"
+    Write-Warning "Inno Setup is not installed. EXE files were created in dist\, but installer was not created."
+    Write-Host "Download Inno Setup 6: https://jrsoftware.org/isdl.php"
 }

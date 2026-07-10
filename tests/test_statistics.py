@@ -1,7 +1,10 @@
 from pathlib import Path
 
+from openpyxl import load_workbook
+
 from scan_backup_manager.db import Database
 from scan_backup_manager.models import Personnel, Project, ProjectTask
+from scan_backup_manager.reports import ReportService
 from scan_backup_manager.statistics import StatisticsService
 
 
@@ -82,3 +85,20 @@ def test_job_quantity_by_day_groups_by_date_and_job(tmp_path: Path) -> None:
         ("Check Scan", 1),
     ]
     assert all(row.started_at for row in details)
+
+    output = ReportService(db).export_attendance_report(
+        project_id, "2000-01-01", "2999-12-31", tmp_path / "reports"
+    )
+    workbook = load_workbook(output)
+    assert workbook.sheetnames == ["Cham cong", "Tong hop"]
+    attendance = workbook["Cham cong"]
+    rows = list(attendance.iter_rows(values_only=True))
+    assert rows[0][:5] == (
+        "day",
+        "personnel_code",
+        "full_name",
+        "sequence_number",
+        "job_title",
+    )
+    assert len(rows) == 4
+    assert {row[4] for row in rows[1:]} == {"Scan A4", "Scan A3", "Check Scan"}

@@ -27,18 +27,22 @@ class BackupJobService:
         self.backup = BackupManager(db)
         self.instance_id = instance_id or f"{socket.gethostname()}-{uuid.uuid4().hex[:8]}"
         self._next_scan: dict[int, datetime] = {}
+        self._last_verify_day: dict[int, str] = {}
 
     def schedule_due_projects(self) -> None:
         now = datetime.now(timezone.utc)
+        verify_day = datetime.now().date().isoformat()
         for project in self.db.list_projects():
             if not project.enabled or project.id is None:
                 continue
             due = self._next_scan.get(project.id)
-            if due is not None and due > now:
-                continue
-            self.db.enqueue_job(project.id, JOB_SCAN, deduplicate=True)
-            seconds = max(self.db.get_project_settings(project.id).poll_interval_seconds, 30)
-            self._next_scan[project.id] = now + timedelta(seconds=seconds)
+            if due is None or due <= now:
+                self.db.enqueue_job(project.id, JOB_SCAN, deduplicate=True)
+                seconds = max(self.db.get_project_settings(project.id).poll_interval_seconds, 30)
+                self._next_scan[project.id] = now + timedelta(seconds=seconds)
+            if self._last_verify_day.get(project.id) != verify_day:
+                self.db.enqueue_job(project.id, JOB_VERIFY, deduplicate=True)
+                self._last_verify_day[project.id] = verify_day
 
     def process_one(self) -> bool:
         job = self.db.claim_next_job(self.instance_id)

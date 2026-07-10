@@ -8,6 +8,7 @@ import flet_charts as fc
 from ... import kit
 from ...date_format import DISPLAY_DATE_HINT, display_to_iso, iso_to_display
 from ...theme import ACCENT_2, INFO, PRIMARY_DARK, SUCCESS, TEXT_MUTED, WARNING
+from ...workers import run_worker
 
 
 CHART_TOTAL = PRIMARY_DARK
@@ -282,6 +283,41 @@ def build(ctx) -> ft.Control:
         status_text.value = ""
         render_results(date_from, date_to)
 
+    def export_attendance(_event=None) -> None:
+        try:
+            date_from = display_to_iso(date_from_field.value or iso_to_display(default_from))
+            date_to = display_to_iso(date_to_field.value or iso_to_display(default_to))
+        except ValueError as exc:
+            status_text.value = str(exc)
+            status_text.color = ft.Colors.ERROR
+            ctx.page.update()
+            return
+        if date_from > date_to:
+            status_text.value = "Từ ngày không được lớn hơn Đến ngày."
+            status_text.color = ft.Colors.ERROR
+            ctx.page.update()
+            return
+        status_text.value = "Đang xuất dữ liệu chấm công..."
+        status_text.color = ft.Colors.PRIMARY
+        ctx.page.update()
+
+        def on_success(path) -> None:
+            status_text.value = f"Đã xuất chấm công: {path}"
+            status_text.color = SUCCESS
+            ctx.page.update()
+
+        def on_error(message: str) -> None:
+            status_text.value = message.splitlines()[-1] if message else "Không thể xuất chấm công."
+            status_text.color = ft.Colors.ERROR
+            ctx.page.update()
+
+        run_worker(
+            ctx.page,
+            lambda: ctx.reports.export_attendance_report(project_id, date_from, date_to),
+            on_success=on_success,
+            on_error=on_error,
+        )
+
     date_from_field.on_submit = apply_range
     date_to_field.on_submit = apply_range
 
@@ -294,6 +330,7 @@ def build(ctx) -> ft.Control:
                 date_from_field,
                 date_to_field,
                 kit.primary_button("Xem thống kê", icon=ft.Icons.QUERY_STATS, on_click=apply_range),
+                kit.ghost_button("Xuất chấm công", icon=ft.Icons.FILE_DOWNLOAD, on_click=export_attendance),
                 status_text,
             ],
         ),

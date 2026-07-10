@@ -1065,6 +1065,44 @@ class Database:
         shutil.copy2(self.db_path, destination)
         return destination
 
+    def project_database_path(self, project_code: str) -> Path:
+        code = project_code.strip().upper()
+        return self.db_path.parent / "project_databases" / f"{code}.sqlite3"
+
+    def ensure_project_database(self, project_id: int) -> Path:
+        project = self.get_project(project_id)
+        if not project:
+            raise ValueError(f"Project not found: {project_id}")
+        destination = self.project_database_path(project.project_code)
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        now = utc_now()
+        with closing(sqlite3.connect(destination)) as conn:
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS project_metadata(
+                    key TEXT PRIMARY KEY,
+                    value TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                )
+                """
+            )
+            rows = {
+                "project_id": str(project.id or ""),
+                "project_code": project.project_code,
+                "display_name": project.display_name,
+                "central_db_path": str(self.db_path),
+            }
+            for key, value in rows.items():
+                conn.execute(
+                    """
+                    INSERT INTO project_metadata(key, value, updated_at) VALUES(?, ?, ?)
+                    ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at
+                    """,
+                    (key, value, now),
+                )
+            conn.commit()
+        return destination
+
     # ------------------------------------------------------------------
     # Projects
     # ------------------------------------------------------------------
@@ -1186,7 +1224,27 @@ class Database:
             )
             self._seed_paper_formats(conn, project_id)
             self._seed_job_types(conn, project_id)
+        self.ensure_project_database(project_id)
         return project_id
+
+    def delete_project(self, project_id: int) -> None:
+        project = self.get_project(project_id)
+        if not project:
+            raise ValueError(f"Project not found: {project_id}")
+        project_db_path = self.project_database_path(project.project_code)
+        with self.connect() as conn:
+            cur = conn.execute("DELETE FROM projects WHERE id=?", (project_id,))
+            if cur.rowcount == 0:
+                raise ValueError(f"Project not found: {project_id}")
+        try:
+            project_db_path.unlink()
+        except FileNotFoundError:
+            pass
+        self.record_audit(
+            "PROJECT_DELETED",
+            f"Deleted project {project.project_code} - {project.display_name}",
+            project_id=None,
+        )
 
     def get_project_settings(self, project_id: int) -> ProjectSettings:
         with self.connect() as conn:

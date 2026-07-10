@@ -75,6 +75,56 @@ def _open_create_project_dialog(shell) -> None:
     shell.page.show_dialog(dialog)
 
 
+def _open_delete_project_dialog(shell, project: Project) -> None:
+    password_field = ft.TextField(
+        label="Mật khẩu admin",
+        password=True,
+        can_reveal_password=True,
+        autofocus=True,
+    )
+    error_text = ft.Text("", color=ft.Colors.ERROR)
+
+    def submit(_event) -> None:
+        if not shell.db.verify_admin_password(password_field.value or ""):
+            error_text.value = "Mật khẩu admin không đúng."
+            shell.page.update()
+            return
+        try:
+            shell.db.delete_project(project.id or 0)
+        except ValueError as exc:
+            error_text.value = str(exc)
+            shell.page.update()
+            return
+        shell.page.pop_dialog()
+        if shell.current_project_id == project.id:
+            shell.current_project_id = None
+        shell.refresh_content()
+
+    dialog = kit.dialog(
+        f"Xóa dự án {project.project_code}",
+        ft.Column(
+            spacing=12,
+            tight=True,
+            controls=[
+                ft.Text(
+                    "Thao tác này xóa dữ liệu quản lý của dự án trong ứng dụng và file SQLite phụ. "
+                    "Thư mục backup vật lý sẽ được giữ nguyên.",
+                    color=TEXT_MUTED,
+                ),
+                password_field,
+                error_text,
+            ],
+        ),
+        actions=[
+            ft.TextButton("Hủy", on_click=lambda _e: shell.page.pop_dialog()),
+            ft.FilledButton("Xóa dự án", icon=ft.Icons.DELETE_FOREVER, on_click=submit),
+        ],
+        icon=ft.Icons.WARNING_AMBER,
+        width=520,
+    )
+    shell.page.show_dialog(dialog)
+
+
 def build(shell) -> ft.Control:
     db = shell.state.db
     projects = db.list_projects()
@@ -98,6 +148,12 @@ def build(shell) -> ft.Control:
                         vertical_alignment=ft.CrossAxisAlignment.CENTER,
                         controls=[
                             kit.badge("Đang bật", SUCCESS) if project.enabled else kit.badge("Đã tắt", TEXT_MUTED),
+                            ft.IconButton(
+                                icon=ft.Icons.DELETE_OUTLINE,
+                                tooltip="Xóa dự án",
+                                icon_color=ft.Colors.ERROR,
+                                on_click=lambda _e, p=project: _open_delete_project_dialog(shell, p),
+                            ),
                             kit.primary_button("Mở trang điều khiển", icon=ft.Icons.ARROW_FORWARD, on_click=lambda _e, pid=project_id: shell.open_project(pid)),
                         ],
                     ),
