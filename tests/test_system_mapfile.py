@@ -30,15 +30,21 @@ def _add_file(
     name: str,
     status: str,
     hash_sha256: str,
+    dest_path: Path | None = None,
+    create_dest: bool = False,
 ) -> None:
     record_code = name.rsplit(".", 1)[0]
+    target = dest_path or Path(rf"D:\backup\PROJECT_ALPHA\2026\HS\{record_code}\{name}")
+    if create_dest:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(b"%PDF-1.4\n")
     db.upsert_backup_file(
         project_id=project_id,
         client_code=client,
         source_path=rf"\\{client}\share\PROJECT_ALPHA\2026\HS\{record_code}\{name}",
         project_code="PROJECT_ALPHA",
         relative_project_path=f"2026/HS/{record_code}/{name}",
-        dest_path=rf"D:\backup\PROJECT_ALPHA\2026\HS\{record_code}\{name}",
+        dest_path=str(target),
         file_size=1024,
         source_mtime="2026-07-06T08:00:00+00:00",
         status=status,
@@ -452,6 +458,8 @@ def test_check_assignment_lists_completed_scans_waiting_for_check(tmp_path: Path
         name="READY.pdf",
         status="HASH_PENDING",
         hash_sha256="c" * 64,
+        dest_path=tmp_path / "backup" / "PROJECT_ALPHA" / "2026" / "HS" / "READY" / "READY.pdf",
+        create_dest=True,
     )
 
     service.add_manual_record(project_id, ["2026", "HS", "CHECKED"])
@@ -519,6 +527,43 @@ def test_check_assignment_lists_completed_scans_waiting_for_check(tmp_path: Path
         name="WAITING.pdf",
         status="HASH_PENDING",
         hash_sha256="e" * 64,
+        dest_path=tmp_path / "backup" / "PROJECT_ALPHA" / "2026" / "HS" / "WAITING" / "WAITING.pdf",
+        create_dest=True,
+    )
+    service.add_manual_record(project_id, ["2026", "HS", "MISSING"])
+    db.save_record_workflow(
+        project_id=project_id,
+        record_key="2026/HS/MISSING",
+        scanner_id=scanner_id,
+        scan_date="10/07/2026",
+        checker_id=None,
+        check_date="",
+        check_pages=0,
+        check_files=0,
+        record_status="COMPLETED",
+        notes="",
+        paper_statuses=[
+            {
+                "paper_format_id": formats["A4"].id,
+                "scanner_id": scanner_id,
+                "scan_date": "10/07/2026",
+                "scan_status": "SCANNED",
+                "scan_pages": 9,
+                "scan_files": 1,
+                "check_pages": 0,
+                "notes": "",
+            }
+        ],
+    )
+    _add_file(
+        db,
+        project_id,
+        client="SCAN01",
+        name="MISSING.pdf",
+        status="HASH_PENDING",
+        hash_sha256="f" * 64,
+        dest_path=tmp_path / "backup" / "PROJECT_ALPHA" / "2026" / "HS" / "MISSING" / "MISSING.pdf",
+        create_dest=False,
     )
 
     ready_records = db.list_check_ready_system_records(project_id)

@@ -11,7 +11,11 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Iterable
 
-from .constants import DEFAULT_POLL_INTERVAL_SECONDS, DEFAULT_STABILITY_WAIT_SECONDS
+from .constants import (
+    DEFAULT_POLL_INTERVAL_SECONDS,
+    DEFAULT_STABILITY_WAIT_SECONDS,
+    FINAL_OK_STATUSES,
+)
 from .models import (
     Client,
     DirectoryLevel,
@@ -1667,6 +1671,21 @@ class Database:
         with self.connect() as conn:
             return conn.execute(sql, params).fetchall()
 
+    def has_existing_backup_file_for_record(
+        self, project_id: int, record_key: str
+    ) -> bool:
+        rows = self.list_backup_files_for_record(
+            project_id,
+            record_key,
+            statuses=FINAL_OK_STATUSES,
+        )
+        for row in rows:
+            for path_key in ("dest_path", "source_path"):
+                path_value = str(row[path_key] or "").strip()
+                if path_value and Path(path_value).is_file():
+                    return True
+        return False
+
     def list_backup_files_page(
         self,
         project_id: int,
@@ -1930,6 +1949,7 @@ class Database:
                 has_scan_data
                 and not has_check_data
                 and row.get("backup_status") == "BACKED_UP"
+                and self.has_existing_backup_file_for_record(project_id, record_key)
             ):
                 records.append(row)
                 seen.add(record_key)

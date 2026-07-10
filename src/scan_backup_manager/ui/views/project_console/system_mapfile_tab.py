@@ -54,7 +54,13 @@ BACKUP_STATUS_COLORS = {
     "CONFLICT": WARNING,
     "ERROR": DANGER,
 }
-COUNTABLE_BACKUP_STATUSES = {"HASH_PENDING", "VERIFIED_HASH", "LOCKED", "ALREADY_EXISTS"}
+COUNTABLE_BACKUP_STATUSES = {
+    "VERIFIED_SIZE",
+    "HASH_PENDING",
+    "VERIFIED_HASH",
+    "LOCKED",
+    "ALREADY_EXISTS",
+}
 
 
 def build(ctx) -> ft.Control:
@@ -748,7 +754,18 @@ def build(ctx) -> ft.Control:
                 source = Path(row["source_path"])
             if not source.exists() or not source.is_file():
                 continue
-            shutil.copy2(source, target_folder / source.name)
+            relative_path = str(row["relative_project_path"] or "").replace("\\", "/").strip("/")
+            suffix = ""
+            normalized_key = record_key.replace("\\", "/").strip("/")
+            if relative_path == normalized_key:
+                suffix = source.name
+            elif relative_path.startswith(f"{normalized_key}/"):
+                suffix = relative_path[len(normalized_key) + 1 :]
+            else:
+                suffix = source.name
+            target_path = target_folder / Path(suffix)
+            target_path.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(source, target_path)
             copied += 1
         if copied == 0:
             raise ValueError("Không tìm thấy file backup hợp lệ để copy sang thư mục check.")
