@@ -207,6 +207,47 @@ def test_system_mapfile_can_add_manual_record(tmp_path: Path) -> None:
     assert records[0]["backup_status"] == "NOT_BACKED_UP"
 
 
+def test_system_mapfile_can_edit_manual_record_key(tmp_path: Path) -> None:
+    db = Database(tmp_path / "app.sqlite3")
+    project_id = _create_project(db, tmp_path)
+    service = MapfileService(db)
+    service.add_manual_record(project_id, ["2026", "HS", "002"])
+    db.save_record_workflow(
+        project_id=project_id,
+        record_key="2026/HS/002",
+        scanner_id=None,
+        scan_date="",
+        checker_id=None,
+        check_date="",
+        check_pages=0,
+        check_files=0,
+        record_status="SCANNING",
+        notes="",
+        paper_statuses=[],
+    )
+    db.upsert_backup_file(
+        project_id=project_id,
+        client_code="SCAN01",
+        source_path=r"\\SCAN01\share\PROJECT_ALPHA\2026\HS\002\1.pdf",
+        project_code="PROJECT_ALPHA",
+        relative_project_path="2026/HS/002/1.pdf",
+        dest_path=str(tmp_path / "backup" / "PROJECT_ALPHA" / "2026" / "HS" / "002" / "1.pdf"),
+        file_size=1,
+        source_mtime="2026-07-10T00:00:00",
+        status="HASH_PENDING",
+    )
+
+    new_key = service.update_manual_record(project_id, "2026/HS/002", ["2026", "HS", "003"])
+
+    assert new_key == "2026/HS/003"
+    records, total = db.list_system_records_page(project_id)
+    assert total == 1
+    assert records[0]["record_key"] == "2026/HS/003"
+    assert records[0]["record_status"] == "SCANNING"
+    assert db.list_backup_files_for_record(project_id, "2026/HS/002") == []
+    assert len(db.list_backup_files_for_record(project_id, "2026/HS/003")) == 1
+
+
 def test_manual_record_can_create_client_folder(tmp_path: Path) -> None:
     db = Database(tmp_path / "app.sqlite3")
     project_id = _create_project(db, tmp_path)

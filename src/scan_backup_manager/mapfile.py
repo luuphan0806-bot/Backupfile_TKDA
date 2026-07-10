@@ -266,6 +266,55 @@ class MapfileService:
         )
         return row_id
 
+    def update_manual_record(
+        self,
+        project_id: int,
+        old_record_key: str,
+        record_parts: list[str],
+        *,
+        file_name: str = "",
+    ) -> str:
+        project = self.db.get_project(project_id)
+        if not project:
+            raise ValueError(f"Project not found: {project_id}")
+        clean_parts = [str(part).strip() for part in record_parts]
+        if not clean_parts or any(not part for part in clean_parts):
+            raise ValueError("Cần nhập đầy đủ thông tin hồ sơ.")
+        profile = self.db.get_mapfile_profile(project_id)
+        directory_levels = self.db.list_directory_levels(project_id)
+        raw: dict[str, Any] = {
+            profile.project_column: project.project_code,
+            profile.file_name_column: normalize_cell(file_name),
+        }
+        if clean_parts:
+            raw[profile.year_column] = clean_parts[0]
+        if len(clean_parts) > 1:
+            raw[profile.case_type_column] = clean_parts[1]
+        if len(clean_parts) > 2:
+            raw[profile.case_number_column] = "/".join(clean_parts[2:])
+        for index, value in enumerate(clean_parts):
+            if index < len(directory_levels):
+                raw[directory_levels[index].display_name] = value
+
+        new_record_key = "/".join(clean_parts)
+        expected_parts = [project.project_code.strip(), *clean_parts]
+        if raw[profile.file_name_column]:
+            expected_parts.append(raw[profile.file_name_column])
+        expected = str(Path(*expected_parts))
+        self.db.update_system_record_source(
+            project_id,
+            old_record_key,
+            new_record_key,
+            raw,
+            expected,
+        )
+        self.db.record_audit(
+            "MAPFILE_RECORD_UPDATED",
+            f"Updated system mapfile record {old_record_key} -> {new_record_key}",
+            project_id=project_id,
+        )
+        return new_record_key
+
     def create_client_record_folder(
         self,
         project_id: int,

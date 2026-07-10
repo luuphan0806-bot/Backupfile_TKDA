@@ -87,6 +87,23 @@ def build(ctx) -> ft.Control:
     )
     filters = state["filters"]
 
+    def show_success_toast(message: str) -> None:
+        snack = ft.SnackBar(
+            ft.Row(
+                spacing=10,
+                controls=[
+                    ft.Icon(ft.Icons.CHECK_CIRCLE, color=ft.Colors.WHITE),
+                    ft.Text(message, color=ft.Colors.WHITE, weight=ft.FontWeight.W_600),
+                ],
+            ),
+            bgcolor=SUCCESS,
+            show_close_icon=True,
+            duration=3500,
+            open=True,
+        )
+        ctx.page.overlay.append(snack)
+        ctx.page.update()
+
     def apply_search(_event=None) -> None:
         state["search"] = (search_field.value or "").strip()
         state["page"] = 0
@@ -103,6 +120,7 @@ def build(ctx) -> ft.Control:
             "client_code": (client_filter.value or "").strip(),
             "record_status": record_status_filter.value or "",
             "backup_status": backup_status_filter.value or "",
+            "duplicate_column": duplicate_filter.value or "",
             **{
                 key: (field.value or "").strip()
                 for key, field in level_filter_fields
@@ -290,17 +308,7 @@ def build(ctx) -> ft.Control:
     ]
     for field in [record_key_filter, client_filter, *[field for _key, field in level_filter_fields]]:
         field.on_submit = apply_filters
-    records, total_rows = ctx.db.list_system_records_page(
-        ctx.project_id,
-        limit=page_size,
-        offset=page_index * page_size,
-        search=state["search"],
-        filters=filters,
-    )
     paper_formats = ctx.db.list_paper_formats(ctx.project_id, enabled_only=True)
-    records_summary = ctx.db.get_system_records_summary(
-        ctx.project_id, search=state["search"], filters=filters
-    )
 
     def level_part_value(record_key: str, level) -> str:
         record_parts = record_key.replace("\\", "/").split("/")
@@ -309,6 +317,72 @@ def build(ctx) -> ft.Control:
         if part_index == len(directory_levels) - 1 and len(record_parts) > len(directory_levels):
             value = "/".join(record_parts[part_index:])
         return value
+
+    duplicate_options = [
+        ft.dropdown.Option(key="", text="Không lọc trùng"),
+        ft.dropdown.Option(key="record_key", text="Mã hồ sơ"),
+        *[
+            ft.dropdown.Option(key=f"level_{level.position}", text=level.display_name)
+            for level in mapfile_levels
+        ],
+        ft.dropdown.Option(key="client_codes", text="Máy đang lưu"),
+    ]
+    duplicate_filter = ft.Dropdown(
+        label="Lọc trùng",
+        dense=True,
+        width=170,
+        value=filters.get("duplicate_column", ""),
+        options=duplicate_options,
+    )
+    duplicate_filter.on_change = apply_filters
+
+    base_filters = {
+        key: value
+        for key, value in filters.items()
+        if key != "duplicate_column"
+    }
+    duplicate_column = str(filters.get("duplicate_column", "") or "")
+    if duplicate_column:
+        all_records, _all_total = ctx.db.list_system_records_page(
+            ctx.project_id,
+            limit=5000,
+            offset=0,
+            search=state["search"],
+            filters=base_filters,
+        )
+
+        def duplicate_value(record: dict) -> str:
+            if duplicate_column.startswith("level_"):
+                position = int(duplicate_column.split("_", 1)[1])
+                level = next((item for item in mapfile_levels if item.position == position), None)
+                return level_part_value(record["record_key"], level) if level else ""
+            return str(record.get(duplicate_column, "") or "").strip()
+
+        counts: dict[str, int] = {}
+        for record in all_records:
+            value = duplicate_value(record)
+            if value:
+                counts[value] = counts.get(value, 0) + 1
+        duplicate_values = {value for value, count in counts.items() if count > 1}
+        filtered_records = [
+            record for record in all_records if duplicate_value(record) in duplicate_values
+        ]
+        total_rows = len(filtered_records)
+        records = filtered_records[page_index * page_size : (page_index + 1) * page_size]
+        records_summary = ctx.db.get_system_records_summary(
+            ctx.project_id, search=state["search"], filters=base_filters
+        )
+    else:
+        records, total_rows = ctx.db.list_system_records_page(
+            ctx.project_id,
+            limit=page_size,
+            offset=page_index * page_size,
+            search=state["search"],
+            filters=base_filters,
+        )
+        records_summary = ctx.db.get_system_records_summary(
+            ctx.project_id, search=state["search"], filters=base_filters
+        )
 
     personnel = ctx.db.list_personnel(ctx.project_id, enabled_only=True)
     clients = ctx.db.list_clients(ctx.project_id)
@@ -332,7 +406,7 @@ def build(ctx) -> ft.Control:
         "record_status": 4,
         "backup_status": 3,
         "client_codes": 3,
-        "actions": 3,
+        "actions": 4,
     }
     for level in mapfile_levels:
         default_column_weights[f"level_{level.position}"] = 2
@@ -353,7 +427,7 @@ def build(ctx) -> ft.Control:
         "record_status": 170,
         "backup_status": 150,
         "client_codes": 150,
-        "actions": 128,
+        "actions": 176,
         "check": 250,
     }
     for level in mapfile_levels:
@@ -569,6 +643,27 @@ def build(ctx) -> ft.Control:
             paper_statuses=payload["paper_statuses"],
         )
 
+    def assignment_payload(record_key: str) -> dict:
+        workflow = workflow_payload(record_key)
+        return {
+            key: workflow[key]
+            for key in (
+                "scanner_id",
+                "scan_date",
+                "checker_id",
+                "check_date",
+                "check_pages",
+                "check_files",
+                "record_status",
+                "notes",
+            )
+        }
+
+    def apply_assignment_payload(record_key: str, payload: dict) -> None:
+        current = workflow_payload(record_key)
+        current.update(payload)
+        apply_workflow(record_key, current)
+
     def copy_selected_rows() -> None:
         keys = selected_record_keys()
         if not keys:
@@ -606,20 +701,42 @@ def build(ctx) -> ft.Control:
 
     def fill_down_selected_rows() -> None:
         keys = selected_record_keys()
-        if len(keys) < 2:
-            state["flash"] = "Chọn ít nhất 2 dòng để dùng Ctrl+D."
+        if not keys:
+            state["flash"] = "Chọn dòng cần điền xuống bằng Ctrl+D."
             ctx.refresh()
             return
-        payload = workflow_payload(keys[0])
+        if len(keys) == 1:
+            selected_index = next(
+                (
+                    index
+                    for index, record in enumerate(records)
+                    if record["record_key"] == keys[0]
+                ),
+                -1,
+            )
+            if selected_index <= 0:
+                state["flash"] = "Ctrl+D cần một dòng phía trên làm nguồn."
+                ctx.refresh()
+                return
+            source_key = records[selected_index - 1]["record_key"]
+            targets = keys
+        else:
+            source_key = keys[0]
+            targets = keys[1:]
+        if not targets:
+            state["flash"] = "Chọn thêm dòng bên dưới để điền dữ liệu."
+            ctx.refresh()
+            return
+        payload = assignment_payload(source_key)
         try:
-            for key in keys[1:]:
-                apply_workflow(key, payload)
+            for key in targets:
+                apply_assignment_payload(key, payload)
         except ValueError as exc:
             status_banner.value = str(exc)
             status_banner.color = ft.Colors.ERROR
             ctx.page.update()
             return
-        state["flash"] = f"Đã điền dữ liệu xuống {len(keys) - 1} dòng."
+        state["flash"] = f"Đã điền dữ liệu từ {source_key} xuống {len(targets)} dòng."
         ctx.refresh()
 
     def on_keyboard(event: ft.KeyboardEvent) -> None:
@@ -835,6 +952,7 @@ def build(ctx) -> ft.Control:
                 extras.append(f"đã copy {copied_for_check} file sang thư mục check")
             suffix = f" ({'; '.join(extras)})" if extras else ""
             state["flash"] = f"Đã setup thư mục công việc cho {record['record_key']}.{suffix}"
+            show_success_toast(f"Đã tạo thư mục ở máy trạm: {target}")
             ctx.refresh()
 
         dialog = kit.dialog(
@@ -855,6 +973,62 @@ def build(ctx) -> ft.Control:
             ],
             icon=ft.Icons.SETTINGS,
             width=900,
+        )
+        ctx.page.show_dialog(dialog)
+
+    def open_edit_record_dialog(record: dict) -> None:
+        current_parts = [
+            part for part in record["record_key"].replace("\\", "/").split("/") if part
+        ]
+        record_fields = []
+        for index, (_key, label) in enumerate(new_record_keys()):
+            if index == len(new_record_keys()) - 1 and len(current_parts) > len(new_record_keys()):
+                value = "/".join(current_parts[index:])
+            else:
+                value = current_parts[index] if index < len(current_parts) else ""
+            record_fields.append(
+                ft.TextField(label=label, value=value, dense=True, width=220)
+            )
+        error_text = ft.Text("", color=DANGER)
+
+        def submit(_event=None) -> None:
+            new_parts = [(field.value or "").strip() for field in record_fields]
+            if not new_parts or any(not part for part in new_parts):
+                error_text.value = "Can nhap du thong tin ho so."
+                ctx.page.update()
+                return
+            try:
+                new_key = ctx.mapfiles.update_manual_record(
+                    ctx.project_id,
+                    record["record_key"],
+                    new_parts,
+                )
+            except ValueError as exc:
+                error_text.value = str(exc)
+                ctx.page.update()
+                return
+            ctx.page.pop_dialog()
+            state["flash"] = f"Da cap nhat ho so {record['record_key']} -> {new_key}."
+            state["selected_records"] = {new_key}
+            ctx.refresh()
+
+        dialog = kit.dialog(
+            f"Sua thong tin ho so {record['record_key']}",
+            ft.Column(
+                spacing=12,
+                tight=True,
+                scroll=ft.ScrollMode.AUTO,
+                controls=[
+                    ft.Row(record_fields, wrap=True, spacing=8),
+                    error_text,
+                ],
+            ),
+            [
+                kit.ghost_button("Huy", on_click=lambda _e: ctx.page.pop_dialog()),
+                kit.primary_button("Luu", icon=ft.Icons.SAVE_OUTLINED, on_click=submit),
+            ],
+            icon=ft.Icons.EDIT_OUTLINED,
+            width=860,
         )
         ctx.page.show_dialog(dialog)
 
@@ -990,6 +1164,7 @@ def build(ctx) -> ft.Control:
             suffix = f" ({'; '.join(extras)})" if extras else ""
             state["flash"] = f"Da tao 1 cong viec va thu muc ho so tren may tram.{suffix}"
             state["page"] = 0
+            show_success_toast(f"Đã tạo thư mục ở máy trạm: {target}")
             ctx.refresh()
 
         dialog = kit.dialog(
@@ -1284,15 +1459,22 @@ def build(ctx) -> ft.Control:
                         alignment=ft.MainAxisAlignment.CENTER,
                         controls=[
                             ft.IconButton(
+                                icon=ft.Icons.EDIT_OUTLINED,
+                                tooltip="Sua thong tin ho so",
+                                on_click=lambda _e, current=record: open_edit_record_dialog(
+                                    current
+                                ),
+                            ),
+                            ft.IconButton(
                                 icon=ft.Icons.BACKUP_OUTLINED,
-                                tooltip="Sao l?u h? s?",
+                                tooltip="Sao luu ho so",
                                 on_click=lambda _e, current=record: backup_record(
                                     current
                                 ),
                             ),
                             ft.IconButton(
                                 icon=ft.Icons.SETTINGS_OUTLINED,
-                                tooltip="Setup c?ng vi?c",
+                                tooltip="Setup cong viec",
                                 on_click=lambda _e, current=record: open_setup_dialog(
                                     current
                                 ),
@@ -1376,6 +1558,7 @@ def build(ctx) -> ft.Control:
             client_filter,
             record_status_filter,
             backup_status_filter,
+            duplicate_filter,
             ft.FilledButton("Lọc cột", icon=ft.Icons.FILTER_ALT, on_click=apply_filters),
             ft.OutlinedButton(
                 "Xóa lọc cột",
@@ -1413,6 +1596,7 @@ def build(ctx) -> ft.Control:
         )
         body: ft.Control = ft.Column(
             spacing=8,
+            scroll=ft.ScrollMode.AUTO,
             controls=[empty_text],
         )
     else:
@@ -1421,6 +1605,7 @@ def build(ctx) -> ft.Control:
         body = ft.Column(
             expand=True,
             spacing=8,
+            scroll=ft.ScrollMode.AUTO,
             controls=[
                 ft.Row(
                     alignment=ft.MainAxisAlignment.SPACE_BETWEEN,

@@ -2643,6 +2643,82 @@ class Database:
                 ),
             )
 
+    def update_system_record_source(
+        self,
+        project_id: int,
+        old_record_key: str,
+        new_record_key: str,
+        raw: dict[str, Any],
+        expected_relative_path: str,
+    ) -> None:
+        old_record_key = old_record_key.strip().replace("\\", "/").strip("/")
+        new_record_key = new_record_key.strip().replace("\\", "/").strip("/")
+        if not old_record_key or not new_record_key:
+            raise ValueError("Record key is required")
+        with self.connect() as conn:
+            latest_import = conn.execute(
+                """
+                SELECT id FROM mapfile_imports
+                WHERE project_id=? ORDER BY id DESC LIMIT 1
+                """,
+                (project_id,),
+            ).fetchone()
+            if latest_import is None:
+                raise ValueError("Project has no mapfile import to update")
+            import_id = int(latest_import["id"])
+            duplicate = conn.execute(
+                """
+                SELECT 1 FROM mapfile_rows
+                WHERE import_id=? AND record_key=? AND record_key<>?
+                LIMIT 1
+                """,
+                (import_id, new_record_key, old_record_key),
+            ).fetchone()
+            if duplicate:
+                raise ValueError(f"Record already exists: {new_record_key}")
+            cur = conn.execute(
+                """
+                UPDATE mapfile_rows
+                SET raw_json=?, expected_relative_path=?, record_key=?
+                WHERE import_id=? AND record_key=?
+                """,
+                (
+                    json.dumps(raw, ensure_ascii=False),
+                    expected_relative_path,
+                    new_record_key,
+                    import_id,
+                    old_record_key,
+                ),
+            )
+            if cur.rowcount == 0:
+                raise ValueError(f"Mapfile row not found: {old_record_key}")
+            if old_record_key != new_record_key:
+                workflow_conflict = conn.execute(
+                    """
+                    SELECT 1 FROM record_workflows
+                    WHERE project_id=? AND record_key=? LIMIT 1
+                    """,
+                    (project_id, new_record_key),
+                ).fetchone()
+                if workflow_conflict:
+                    raise ValueError(f"Workflow already exists: {new_record_key}")
+                conn.execute(
+                    """
+                    UPDATE record_workflows
+                    SET record_key=?, updated_at=?
+                    WHERE project_id=? AND record_key=?
+                    """,
+                    (new_record_key, utc_now(), project_id, old_record_key),
+                )
+                conn.execute(
+                    """
+                    UPDATE backup_files
+                    SET record_key=?
+                    WHERE project_id=? AND record_key=?
+                    """,
+                    (new_record_key, project_id, old_record_key),
+                )
+
     def mark_mapfile_row_done(
         self, row_id: int, personnel_id: int | None, *, done_at: str | None = None
     ) -> None:
