@@ -1010,7 +1010,57 @@ def build(ctx) -> ft.Control:
         ctx.page.show_dialog(dialog)
 
     def open_create_job_dialog(_event=None) -> None:
-        record_inputs, record_inputs_row = build_record_inputs()
+        scan_rows: list[dict] = []
+        scan_rows_column = ft.Column(spacing=8, tight=True)
+        check_records, _check_total = ctx.db.list_system_records_page(
+            ctx.project_id,
+            limit=5000,
+            offset=0,
+            filters={"record_status": "PENDING_CHECK"},
+        )
+        check_record_boxes = [
+            ft.Checkbox(label=record["record_key"], value=False, data=record)
+            for record in check_records
+        ]
+        check_records_panel = ft.Container(visible=False)
+
+        def add_scan_row(initial_parts: list[str] | None = None) -> None:
+            entries, row_controls = build_record_inputs(initial_parts)
+            row_box = ft.Container(
+                padding=8,
+                border_radius=8,
+                border=ft.Border.all(1, ft.Colors.with_opacity(0.18, ft.Colors.PRIMARY)),
+                content=ft.Row(
+                    vertical_alignment=ft.CrossAxisAlignment.START,
+                    controls=[
+                        ft.Container(expand=True, content=row_controls),
+                        ft.IconButton(
+                            icon=ft.Icons.DELETE_OUTLINE,
+                            tooltip="Xoa dong ho so",
+                            on_click=lambda _event, row_ref=None: remove_scan_row(row_item),
+                        ),
+                    ],
+                ),
+            )
+            row_item = {"entries": entries, "control": row_box}
+            row_box.content.controls[1].on_click = lambda _event, item=row_item: remove_scan_row(item)
+            scan_rows.append(row_item)
+            rebuild_scan_rows()
+
+        def remove_scan_row(row_item: dict) -> None:
+            if len(scan_rows) <= 1:
+                return
+            if row_item in scan_rows:
+                scan_rows.remove(row_item)
+                rebuild_scan_rows()
+
+        def rebuild_scan_rows() -> None:
+            scan_rows_column.controls = [item["control"] for item in scan_rows]
+            if getattr(scan_rows_column, "page", None) is not None:
+                ctx.page.update()
+
+        add_scan_row()
+
         job_dropdown = ft.Dropdown(
             label="Cong viec",
             dense=True,
@@ -1053,21 +1103,92 @@ def build(ctx) -> ft.Control:
             value=False,
         )
         error_text = ft.Text("", color=DANGER)
+        scan_rows_panel = ft.Column(
+            spacing=8,
+            tight=True,
+            controls=[
+                ft.Row(
+                    alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
+                    controls=[
+                        ft.Text("Danh sach dong mapfile can tao", color=TEXT_MUTED),
+                        ft.OutlinedButton(
+                            "Them dong",
+                            icon=ft.Icons.ADD,
+                            on_click=lambda _event: add_scan_row(),
+                        ),
+                    ],
+                ),
+                scan_rows_column,
+            ],
+        )
+        check_records_panel.content = ft.Column(
+            spacing=8,
+            tight=True,
+            controls=[
+                ft.Text(
+                    "Chon ho so da scan xong va dang cho check.",
+                    color=TEXT_MUTED,
+                ),
+                ft.Container(
+                    height=260,
+                    border_radius=8,
+                    border=ft.Border.all(1, ft.Colors.with_opacity(0.18, ft.Colors.PRIMARY)),
+                    padding=8,
+                    content=ft.Column(
+                        spacing=2,
+                        scroll=ft.ScrollMode.AUTO,
+                        controls=check_record_boxes
+                        if check_record_boxes
+                        else [ft.Text("Khong co ho so nao dang cho check.", color=TEXT_MUTED)],
+                    ),
+                ),
+            ],
+        )
+
+        def current_job():
+            return next((item for item in job_types if item.job_code == (job_dropdown.value or "")), None)
+
+        def current_is_check() -> bool:
+            job = current_job()
+            return bool(job and assignment_kind(job.display_name, job.job_code) == "check")
+
+        def refresh_mode(_event=None) -> None:
+            is_check = current_is_check()
+            scan_rows_panel.visible = not is_check
+            a3_presence_checkbox.visible = not is_check
+            check_records_panel.visible = is_check
+            if getattr(scan_rows_panel, "page", None) is not None:
+                ctx.page.update()
+
+        job_dropdown.on_change = refresh_mode
+
+        def complete_previous_if_needed(personnel_id: int) -> list[str]:
+            if not finish_previous_checkbox.value:
+                return []
+            completed_previous = ctx.db.complete_open_tasks_for_assignee(
+                ctx.project_id,
+                personnel_id,
+            )
+            for previous_key in completed_previous:
+                try:
+                    ctx.backup.backup_record(ctx.project_id, previous_key)
+                except Exception as exc:
+                    ctx.db.record_audit(
+                        "ASSIGNMENT_PREVIOUS_BACKUP_ERROR",
+                        str(exc),
+                        project_id=ctx.project_id,
+                    )
+            return completed_previous
 
         def submit(_submit_event=None) -> None:
-            parts = record_parts_from_inputs(record_inputs)
             job_code = job_dropdown.value or ""
             personnel_id = int(personnel_dropdown.value) if personnel_dropdown.value else None
             client_code = client_dropdown.value or ""
-            if not parts or any(not part for part in parts):
-                error_text.value = "Can nhap du cau truc ho so cho dong mapfile."
-                ctx.page.update()
-                return
             if not job_code or personnel_id is None or not client_code:
                 error_text.value = "Can chon du cong viec, nhan su va may tram."
                 ctx.page.update()
                 return
-            job = next((item for item in job_types if item.job_code == job_code), None)
+            job = current_job()
             person = next((item for item in personnel if item.id == personnel_id), None)
             client = next((item for item in clients if item.client_code == client_code), None)
             if not job or not person or not client:
@@ -1076,63 +1197,98 @@ def build(ctx) -> ft.Control:
                 return
             work_date_display = datetime.now().strftime("%d/%m/%Y")
             work_date_folder = datetime.now().strftime("%d-%m-%Y")
+            created = 0
+            copied_for_check = 0
+            targets: list[Path] = []
             try:
-                completed_previous = []
-                if finish_previous_checkbox.value:
-                    completed_previous = ctx.db.complete_open_tasks_for_assignee(
-                        ctx.project_id,
-                        personnel_id,
-                    )
-                    for previous_key in completed_previous:
-                        try:
-                            ctx.backup.backup_record(ctx.project_id, previous_key)
-                        except Exception as exc:
-                            ctx.db.record_audit(
-                                "ASSIGNMENT_PREVIOUS_BACKUP_ERROR",
-                                str(exc),
-                                project_id=ctx.project_id,
-                            )
-                row_id = ctx.mapfiles.add_manual_record(
-                    ctx.project_id,
-                    parts,
-                    client_code=client.client_code,
-                    workstation_owner=person.full_name,
-                    workstation_date=work_date_folder,
-                    workstation_task=job.display_name,
-                )
-                target = ctx.mapfiles.create_client_record_folder(
-                    ctx.project_id,
-                    client.client_code,
-                    parts,
-                    owner_name=person.full_name,
-                    work_date=work_date_folder,
-                    task_name=job.display_name,
-                )
-                ctx.db.save_task(
-                    ProjectTask(
-                        None,
-                        ctx.project_id,
-                        task_code_for(parts, job.job_code),
-                        job.display_name,
-                        f"Thu muc ho so: {'/'.join(parts)}\nMay tram: {client.client_code}\nDong mapfile: {row_id}\nThu muc: {target}",
-                        int(person.id),
-                        "",
-                    )
-                )
-                ctx.db.save_record_assignment(
-                    project_id=ctx.project_id,
-                    record_key="/".join(parts),
-                    personnel_id=int(person.id),
-                    work_date=work_date_display,
-                    assignment_kind=assignment_kind(job.display_name, job.job_code),
-                    paper_presence={
-                        "A3": bool(a3_presence_checkbox.value)
-                        or job_implies_a3(job.display_name, job.job_code)
-                    },
-                )
-                copied_for_check = 0
+                completed_previous = complete_previous_if_needed(personnel_id)
                 if assignment_kind(job.display_name, job.job_code) == "check":
-                    copied_for_check = copy_backup_files_for_check("/".join(parts), target)
+                    selected_records = [box.data for box in check_record_boxes if box.value]
+                    if not selected_records:
+                        raise ValueError("Can chon it nhat 1 ho so de tao viec check.")
+                    for record in selected_records:
+                        parts = [part for part in record["record_key"].replace("\\", "/").split("/") if part]
+                        target = ctx.mapfiles.create_client_record_folder(
+                            ctx.project_id,
+                            client.client_code,
+                            parts,
+                            owner_name=person.full_name,
+                            work_date=work_date_folder,
+                            task_name=job.display_name,
+                        )
+                        ctx.db.save_task(
+                            ProjectTask(
+                                None,
+                                ctx.project_id,
+                                task_code_for(parts, job.job_code),
+                                job.display_name,
+                                f"Thu muc ho so: {'/'.join(parts)}\nMay tram: {client.client_code}\nThu muc: {target}",
+                                int(person.id),
+                                "",
+                            )
+                        )
+                        ctx.db.save_record_assignment(
+                            project_id=ctx.project_id,
+                            record_key="/".join(parts),
+                            personnel_id=int(person.id),
+                            work_date=work_date_display,
+                            assignment_kind="check",
+                        )
+                        copied_for_check += copy_backup_files_for_check("/".join(parts), target)
+                        targets.append(target)
+                        created += 1
+                else:
+                    seen_keys: set[str] = set()
+                    for row_item in scan_rows:
+                        parts = record_parts_from_inputs(row_item["entries"])
+                        if not parts or any(not part for part in parts):
+                            raise ValueError("Can nhap du cau truc ho so cho moi dong mapfile.")
+                        record_key = "/".join(parts)
+                        if record_key in seen_keys:
+                            raise ValueError(f"Trung ho so trong lan tao viec: {record_key}")
+                        seen_keys.add(record_key)
+                    for row_item in scan_rows:
+                        parts = record_parts_from_inputs(row_item["entries"])
+                        row_id = ctx.mapfiles.add_manual_record(
+                            ctx.project_id,
+                            parts,
+                            client_code=client.client_code,
+                            workstation_owner=person.full_name,
+                            workstation_date=work_date_folder,
+                            workstation_task=job.display_name,
+                        )
+                        target = ctx.mapfiles.create_client_record_folder(
+                            ctx.project_id,
+                            client.client_code,
+                            parts,
+                            owner_name=person.full_name,
+                            work_date=work_date_folder,
+                            task_name=job.display_name,
+                        )
+                        ctx.db.save_task(
+                            ProjectTask(
+                                None,
+                                ctx.project_id,
+                                task_code_for(parts, job.job_code),
+                                job.display_name,
+                                f"Thu muc ho so: {'/'.join(parts)}\nMay tram: {client.client_code}\nDong mapfile: {row_id}\nThu muc: {target}",
+                                int(person.id),
+                                "",
+                            )
+                        )
+                        ctx.db.save_record_assignment(
+                            project_id=ctx.project_id,
+                            record_key="/".join(parts),
+                            personnel_id=int(person.id),
+                            work_date=work_date_display,
+                            assignment_kind="scan",
+                            paper_presence={
+                                "A3": bool(a3_presence_checkbox.value)
+                                or job_implies_a3(job.display_name, job.job_code)
+                            },
+                        )
+                        targets.append(target)
+                        created += 1
             except ValueError as exc:
                 error_text.value = str(exc)
                 ctx.page.update()
@@ -1144,9 +1300,10 @@ def build(ctx) -> ft.Control:
             if copied_for_check:
                 extras.append(f"da copy {copied_for_check} file sang thu muc check")
             suffix = f" ({'; '.join(extras)})" if extras else ""
-            state["flash"] = f"Da tao 1 cong viec va thu muc ho so tren may tram.{suffix}"
+            state["flash"] = f"Da tao {created} cong viec va thu muc tren may tram.{suffix}"
             state["page"] = 0
-            show_success_toast(f"Đã tạo thư mục ở máy trạm: {target}")
+            if targets:
+                show_success_toast(f"Da tao {len(targets)} thu muc o may tram")
             ctx.refresh()
 
         dialog = kit.dialog(
@@ -1157,13 +1314,14 @@ def build(ctx) -> ft.Control:
                 scroll=ft.ScrollMode.AUTO,
                 controls=[
                     ft.Text(
-                        "Moi lan giao viec tao dung 1 dong mapfile cho 1 nhan su va 1 cong viec.",
+                        "Scan: them nhieu dong mapfile trong mot lan giao. Check: chon ho so dang cho check.",
                         color=TEXT_MUTED,
                     ),
-                    record_inputs_row,
                     ft.Row([job_dropdown, personnel_dropdown, client_dropdown], wrap=True, spacing=8),
                     finish_previous_checkbox,
                     a3_presence_checkbox,
+                    scan_rows_panel,
+                    check_records_panel,
                     error_text,
                 ],
             ),
@@ -1172,8 +1330,9 @@ def build(ctx) -> ft.Control:
                 kit.primary_button("Tao cong viec", icon=ft.Icons.ADD_TASK, on_click=submit),
             ],
             icon=ft.Icons.ADD_TASK,
-            width=940,
+            width=1080,
         )
+        refresh_mode()
         ctx.page.show_dialog(dialog)
 
     def readonly_metric_box(label: str, value: int | str, color: str, width: int) -> ft.Control:
