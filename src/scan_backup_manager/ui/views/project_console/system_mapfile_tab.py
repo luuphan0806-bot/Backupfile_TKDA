@@ -853,7 +853,7 @@ def build(ctx) -> ft.Control:
                         ctx.project_id,
                         task_code_for(parts, job.job_code),
                         job.display_name,
-                        f"Thu muc ho so: {'/'.join(parts)}\nMay tram: {client_code}\nThu muc: {target}",
+                        f"Thư mục hồ sơ: {'/'.join(parts)}\nMáy trạm: {client_code}\nThư mục: {target}",
                         personnel_id,
                         "",
                     )
@@ -919,7 +919,7 @@ def build(ctx) -> ft.Control:
         def submit(_event=None) -> None:
             new_parts = record_parts_from_inputs(record_inputs)
             if not new_parts or any(not part for part in new_parts):
-                error_text.value = "Can nhap du thong tin ho so."
+                error_text.value = "Cần nhập đủ thông tin hồ sơ."
                 ctx.page.update()
                 return
             try:
@@ -933,11 +933,11 @@ def build(ctx) -> ft.Control:
                 ctx.page.update()
                 return
             ctx.page.pop_dialog()
-            state["flash"] = f"Da cap nhat ho so {record['record_key']} -> {new_key}."
+            state["flash"] = f"Đã cập nhật hồ sơ {record['record_key']} -> {new_key}."
             ctx.refresh()
 
         dialog = kit.dialog(
-            f"Sua thong tin ho so {record['record_key']}",
+            f"Sửa thông tin hồ sơ {record['record_key']}",
             ft.Column(
                 spacing=12,
                 tight=True,
@@ -948,8 +948,8 @@ def build(ctx) -> ft.Control:
                 ],
             ),
             [
-                kit.ghost_button("Huy", on_click=lambda _e: ctx.page.pop_dialog()),
-                kit.primary_button("Luu", icon=ft.Icons.SAVE_OUTLINED, on_click=submit),
+                kit.ghost_button("Hủy", on_click=lambda _e: ctx.page.pop_dialog()),
+                kit.primary_button("Lưu", icon=ft.Icons.SAVE_OUTLINED, on_click=submit),
             ],
             icon=ft.Icons.EDIT_OUTLINED,
             width=860,
@@ -958,7 +958,7 @@ def build(ctx) -> ft.Control:
 
     def open_delete_record_dialog(record: dict) -> None:
         password_field = ft.TextField(
-            label="Mat khau admin",
+            label="Mật khẩu admin",
             password=True,
             can_reveal_password=True,
             width=320,
@@ -967,7 +967,7 @@ def build(ctx) -> ft.Control:
 
         def submit(_event=None) -> None:
             if not ctx.db.verify_admin_password(password_field.value or ""):
-                error_text.value = "Mat khau admin khong dung."
+                error_text.value = "Mật khẩu admin không đúng."
                 ctx.page.update()
                 return
             try:
@@ -980,19 +980,19 @@ def build(ctx) -> ft.Control:
                 ctx.page.update()
                 return
             ctx.page.pop_dialog()
-            state["flash"] = f"Da xoa dong mapfile {record['record_key']} ({deleted} ban ghi du lieu)."
+            state["flash"] = f"Đã xóa dòng mapfile {record['record_key']} ({deleted} bản ghi dữ liệu)."
             ctx.refresh()
 
         dialog = kit.dialog(
-            f"Xoa dong mapfile {record['record_key']}",
+            f"Xóa dòng mapfile {record['record_key']}",
             ft.Column(
                 spacing=12,
                 tight=True,
                 controls=[
                     ft.Text(
-                        "Canh bao: thao tac nay se xoa thong tin mapfile, trang thai ho so, "
-                        "du lieu scan/backup trong he thong cua dong nay. File vat ly tren o dia "
-                        "khong bi xoa.",
+                        "Cảnh báo: thao tác này sẽ xóa thông tin mapfile, trạng thái hồ sơ, "
+                        "dữ liệu scan/backup trong hệ thống của dòng này. File vật lý trên ổ đĩa "
+                        "không bị xóa.",
                         color=DANGER,
                         weight=ft.FontWeight.W_600,
                     ),
@@ -1001,8 +1001,8 @@ def build(ctx) -> ft.Control:
                 ],
             ),
             [
-                kit.ghost_button("Huy", on_click=lambda _e: ctx.page.pop_dialog()),
-                kit.primary_button("Xoa dong", icon=ft.Icons.DELETE_OUTLINE, on_click=submit),
+                kit.ghost_button("Hủy", on_click=lambda _e: ctx.page.pop_dialog()),
+                kit.primary_button("Xóa dòng", icon=ft.Icons.DELETE_OUTLINE, on_click=submit),
             ],
             icon=ft.Icons.WARNING_AMBER_ROUNDED,
             width=760,
@@ -1037,7 +1037,7 @@ def build(ctx) -> ft.Control:
                         ft.Container(expand=True, content=row_controls),
                         ft.IconButton(
                             icon=ft.Icons.DELETE_OUTLINE,
-                            tooltip="Xoa dong ho so",
+                            tooltip="Xóa dòng hồ sơ",
                             on_click=lambda _event, row_ref=None: remove_scan_row(row_item),
                         ),
                     ],
@@ -1063,7 +1063,7 @@ def build(ctx) -> ft.Control:
         add_scan_row()
 
         job_dropdown = ft.Dropdown(
-            label="Cong viec",
+            label="Công việc",
             dense=True,
             width=240,
             value=job_types[0].job_code if job_types else "",
@@ -1073,7 +1073,7 @@ def build(ctx) -> ft.Control:
             ],
         )
         personnel_dropdown = ft.Dropdown(
-            label="Nhan su dam nhiem",
+            label="Nhân sự đảm nhiệm",
             dense=True,
             width=260,
             options=[
@@ -1083,7 +1083,7 @@ def build(ctx) -> ft.Control:
             ],
         )
         client_dropdown = ft.Dropdown(
-            label="May tram",
+            label="Máy trạm",
             dense=True,
             width=300,
             options=[
@@ -1096,11 +1096,11 @@ def build(ctx) -> ft.Control:
             ],
         )
         finish_previous_checkbox = ft.Checkbox(
-            label="Chot viec cu cua nhan su va sao luu truoc khi giao viec moi",
+            label="Chốt việc cũ của nhân sự và sao lưu trước khi giao việc mới",
             value=False,
         )
         a3_presence_checkbox = ft.Checkbox(
-            label="Ho so co A3 can scan tiep",
+            label="Hồ sơ có A3 cần scan tiếp",
             value=False,
         )
         error_text = ft.Text("", color=DANGER)
@@ -1111,9 +1111,9 @@ def build(ctx) -> ft.Control:
                 ft.Row(
                     alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
                     controls=[
-                        ft.Text("Danh sach dong mapfile can tao", color=TEXT_MUTED),
+                        ft.Text("Danh sách dòng mapfile cần tạo", color=TEXT_MUTED),
                         ft.OutlinedButton(
-                            "Them dong",
+                            "Thêm dòng",
                             icon=ft.Icons.ADD,
                             on_click=lambda _event: add_scan_row(),
                         ),
@@ -1127,7 +1127,7 @@ def build(ctx) -> ft.Control:
             tight=True,
             controls=[
                 ft.Text(
-                    "Chon ho so da scan xong va dang cho check.",
+                    "Chọn hồ sơ đã scan xong và đang chờ check.",
                     color=TEXT_MUTED,
                 ),
                 ft.Container(
@@ -1140,7 +1140,7 @@ def build(ctx) -> ft.Control:
                         scroll=ft.ScrollMode.AUTO,
                         controls=check_record_boxes
                         if check_record_boxes
-                        else [ft.Text("Khong co ho so nao dang cho check.", color=TEXT_MUTED)],
+                        else [ft.Text("Tạm thời chưa có hồ sơ để check.", color=TEXT_MUTED)],
                     ),
                 ),
             ],
@@ -1186,14 +1186,14 @@ def build(ctx) -> ft.Control:
             personnel_id = int(personnel_dropdown.value) if personnel_dropdown.value else None
             client_code = client_dropdown.value or ""
             if not job_code or personnel_id is None or not client_code:
-                error_text.value = "Can chon du cong viec, nhan su va may tram."
+                error_text.value = "Cần chọn đủ công việc, nhân sự và máy trạm."
                 ctx.page.update()
                 return
             job = current_job()
             person = next((item for item in personnel if item.id == personnel_id), None)
             client = next((item for item in clients if item.client_code == client_code), None)
             if not job or not person or not client:
-                error_text.value = "Cong viec, nhan su hoac may tram khong hop le."
+                error_text.value = "Công việc, nhân sự hoặc máy trạm không hợp lệ."
                 ctx.page.update()
                 return
             work_date_display = datetime.now().strftime("%d/%m/%Y")
@@ -1204,9 +1204,11 @@ def build(ctx) -> ft.Control:
             try:
                 completed_previous = complete_previous_if_needed(personnel_id)
                 if assignment_kind(job.display_name, job.job_code) == "check":
+                    if not check_record_boxes:
+                        raise ValueError("Tạm thời chưa có hồ sơ để check.")
                     selected_records = [box.data for box in check_record_boxes if box.value]
                     if not selected_records:
-                        raise ValueError("Can chon it nhat 1 ho so de tao viec check.")
+                        raise ValueError("Cần chọn ít nhất 1 hồ sơ để tạo việc check.")
                     for record in selected_records:
                         parts = [part for part in record["record_key"].replace("\\", "/").split("/") if part]
                         target = ctx.mapfiles.create_client_record_folder(
@@ -1223,7 +1225,7 @@ def build(ctx) -> ft.Control:
                                 ctx.project_id,
                                 task_code_for(parts, job.job_code),
                                 job.display_name,
-                                f"Thu muc ho so: {'/'.join(parts)}\nMay tram: {client.client_code}\nThu muc: {target}",
+                                f"Thư mục hồ sơ: {'/'.join(parts)}\nMáy trạm: {client.client_code}\nThư mục: {target}",
                                 int(person.id),
                                 "",
                             )
@@ -1243,10 +1245,10 @@ def build(ctx) -> ft.Control:
                     for row_item in scan_rows:
                         parts = record_parts_from_inputs(row_item["entries"])
                         if not parts or any(not part for part in parts):
-                            raise ValueError("Can nhap du cau truc ho so cho moi dong mapfile.")
+                            raise ValueError("Cần nhập đủ cấu trúc hồ sơ cho mỗi dòng mapfile.")
                         record_key = "/".join(parts)
                         if record_key in seen_keys:
-                            raise ValueError(f"Trung ho so trong lan tao viec: {record_key}")
+                            raise ValueError(f"Trùng hồ sơ trong lần tạo việc: {record_key}")
                         seen_keys.add(record_key)
                     for row_item in scan_rows:
                         parts = record_parts_from_inputs(row_item["entries"])
@@ -1272,7 +1274,7 @@ def build(ctx) -> ft.Control:
                                 ctx.project_id,
                                 task_code_for(parts, job.job_code),
                                 job.display_name,
-                                f"Thu muc ho so: {'/'.join(parts)}\nMay tram: {client.client_code}\nDong mapfile: {row_id}\nThu muc: {target}",
+                                f"Thư mục hồ sơ: {'/'.join(parts)}\nMáy trạm: {client.client_code}\nDòng mapfile: {row_id}\nThư mục: {target}",
                                 int(person.id),
                                 "",
                             )
@@ -1297,25 +1299,25 @@ def build(ctx) -> ft.Control:
             ctx.page.pop_dialog()
             extras = []
             if completed_previous:
-                extras.append(f"da chot/backup {len(completed_previous)} viec cu")
+                extras.append(f"đã chốt/backup {len(completed_previous)} việc cũ")
             if copied_for_check:
-                extras.append(f"da copy {copied_for_check} file sang thu muc check")
+                extras.append(f"đã copy {copied_for_check} file sang thư mục check")
             suffix = f" ({'; '.join(extras)})" if extras else ""
-            state["flash"] = f"Da tao {created} cong viec va thu muc tren may tram.{suffix}"
+            state["flash"] = f"Đã tạo {created} công việc và thư mục trên máy trạm.{suffix}"
             state["page"] = 0
             if targets:
-                show_success_toast(f"Da tao {len(targets)} thu muc o may tram")
+                show_success_toast(f"Đã tạo {len(targets)} thư mục ở máy trạm")
             ctx.refresh()
 
         dialog = kit.dialog(
-            "Tao cong viec va them dong ho so",
+            "Tạo công việc và thêm dòng hồ sơ",
             ft.Column(
                 spacing=12,
                 tight=True,
                 scroll=ft.ScrollMode.AUTO,
                 controls=[
                     ft.Text(
-                        "Scan: them nhieu dong mapfile trong mot lan giao. Check: chon ho so dang cho check.",
+                        "Scan: thêm nhiều dòng mapfile trong một lần giao. Check: chọn hồ sơ đang chờ check.",
                         color=TEXT_MUTED,
                     ),
                     ft.Row([job_dropdown, personnel_dropdown, client_dropdown], wrap=True, spacing=8),
@@ -1327,8 +1329,8 @@ def build(ctx) -> ft.Control:
                 ],
             ),
             [
-                kit.ghost_button("Huy", on_click=lambda _e: ctx.page.pop_dialog()),
-                kit.primary_button("Tao cong viec", icon=ft.Icons.ADD_TASK, on_click=submit),
+                kit.ghost_button("Hủy", on_click=lambda _e: ctx.page.pop_dialog()),
+                kit.primary_button("Tạo công việc", icon=ft.Icons.ADD_TASK, on_click=submit),
             ],
             icon=ft.Icons.ADD_TASK,
             width=1080,
@@ -1633,7 +1635,7 @@ def build(ctx) -> ft.Control:
                             ),
                             ft.IconButton(
                                 icon=ft.Icons.DELETE_OUTLINE,
-                                tooltip="Xoa dong mapfile",
+                                tooltip="Xóa dòng mapfile",
                                 icon_color=DANGER,
                                 on_click=lambda _e, current=record: open_delete_record_dialog(
                                     current
