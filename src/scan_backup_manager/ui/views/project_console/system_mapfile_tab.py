@@ -1010,6 +1010,7 @@ def build(ctx) -> ft.Control:
         ctx.page.show_dialog(dialog)
 
     def open_create_job_dialog(_event=None) -> None:
+        dialog_ready = {"value": False}
         scan_rows: list[dict] = []
         scan_rows_column = ft.Column(spacing=8, tight=True)
         check_records, _check_total = ctx.db.list_system_records_page(
@@ -1056,7 +1057,7 @@ def build(ctx) -> ft.Control:
 
         def rebuild_scan_rows() -> None:
             scan_rows_column.controls = [item["control"] for item in scan_rows]
-            if getattr(scan_rows_column, "page", None) is not None:
+            if dialog_ready["value"]:
                 ctx.page.update()
 
         add_scan_row()
@@ -1157,7 +1158,7 @@ def build(ctx) -> ft.Control:
             scan_rows_panel.visible = not is_check
             a3_presence_checkbox.visible = not is_check
             check_records_panel.visible = is_check
-            if getattr(scan_rows_panel, "page", None) is not None:
+            if dialog_ready["value"]:
                 ctx.page.update()
 
         job_dropdown.on_change = refresh_mode
@@ -1334,6 +1335,7 @@ def build(ctx) -> ft.Control:
         )
         refresh_mode()
         ctx.page.show_dialog(dialog)
+        dialog_ready["value"] = True
 
     def readonly_metric_box(label: str, value: int | str, color: str, width: int) -> ft.Control:
         return ft.Container(
