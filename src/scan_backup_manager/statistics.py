@@ -40,6 +40,13 @@ class LatencyStats:
     bucket_over_24h: int
 
 
+@dataclass(slots=True)
+class PaperSizeSummary:
+    paper_code: str
+    page_count: int
+    file_count: int
+
+
 class StatisticsService:
     """Aggregate queries for the per-project "Thống kê" tab.
 
@@ -175,3 +182,42 @@ class StatisticsService:
             count, average, median,
             buckets["<1h"], buckets["1-4h"], buckets["4-24h"], buckets[">24h"],
         )
+
+    def paper_size_summary(
+        self, project_id: int, date_from: str, date_to: str
+    ) -> list[PaperSizeSummary]:
+        with self.db.connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT s.paper_code,
+                    SUM(s.page_count) AS page_count,
+                    COUNT(DISTINCT s.backup_file_id) AS file_count
+                FROM backup_file_paper_sizes s
+                JOIN backup_files b ON b.id=s.backup_file_id
+                WHERE b.project_id=?
+                    AND b.status IN ('HASH_PENDING', 'VERIFIED_HASH', 'LOCKED', 'ALREADY_EXISTS')
+                    AND substr(COALESCE(b.locked_at, b.verified_at, b.copied_at, b.created_at), 1, 10)
+                        BETWEEN ? AND ?
+                GROUP BY s.paper_code
+                ORDER BY
+                    CASE s.paper_code
+                        WHEN 'A0' THEN 0
+                        WHEN 'A1' THEN 1
+                        WHEN 'A2' THEN 2
+                        WHEN 'A3' THEN 3
+                        WHEN 'A4' THEN 4
+                        WHEN 'A5' THEN 5
+                        ELSE 99
+                    END,
+                    s.paper_code
+                """,
+                (project_id, date_from, date_to),
+            ).fetchall()
+        return [
+            PaperSizeSummary(
+                row["paper_code"],
+                int(row["page_count"] or 0),
+                int(row["file_count"] or 0),
+            )
+            for row in rows
+        ]

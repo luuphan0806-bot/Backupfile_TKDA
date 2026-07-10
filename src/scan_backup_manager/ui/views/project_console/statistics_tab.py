@@ -46,6 +46,7 @@ def build(ctx) -> ft.Control:
         latency = stats.done_to_backup_latency(project_id, date_from, date_to)
         daily = stats.productivity_by_day(project_id, date_from, date_to)
         by_personnel = stats.productivity_by_personnel(project_id, date_from, date_to)
+        paper_sizes = stats.paper_size_summary(project_id, date_from, date_to)
 
         kpi_row = ft.Row(
             spacing=12,
@@ -119,6 +120,24 @@ def build(ctx) -> ft.Control:
             ],
         )
 
+        paper_table = ft.DataTable(
+            columns=[
+                ft.DataColumn(ft.Text("Khổ giấy")),
+                ft.DataColumn(ft.Text("Số trang")),
+                ft.DataColumn(ft.Text("Số file")),
+            ],
+            rows=[
+                ft.DataRow(
+                    cells=[
+                        ft.DataCell(ft.Text(row.paper_code)),
+                        ft.DataCell(ft.Text(str(row.page_count))),
+                        ft.DataCell(ft.Text(str(row.file_count))),
+                    ]
+                )
+                for row in paper_sizes
+            ],
+        )
+
         def do_export(_event) -> None:
             status_text.value = "Đang xuất báo cáo thống kê..."
             ctx.page.update()
@@ -143,6 +162,8 @@ def build(ctx) -> ft.Control:
                 kit.card(chart, padding=16) if daily else chart,
                 kit.eyebrow("Năng suất theo nhân sự"),
                 kit.table_frame(personnel_table) if by_personnel else ft.Text("Chưa có dữ liệu nhân sự trong khoảng ngày này.", color=TEXT_MUTED),
+                kit.eyebrow("Thống kê khổ giấy thực tế"),
+                kit.table_frame(paper_table) if paper_sizes else ft.Text("Chưa có dữ liệu khổ giấy thực tế trong khoảng ngày này.", color=TEXT_MUTED),
                 ft.Row(controls=[kit.primary_button("Xuất báo cáo thống kê", icon=ft.Icons.DOWNLOAD, on_click=do_export), status_text]),
             ],
         )

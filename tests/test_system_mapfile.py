@@ -199,8 +199,9 @@ def test_system_mapfile_can_add_manual_record(tmp_path: Path) -> None:
     records, total = db.list_system_records_page(project_id)
 
     assert row["expected_relative_path"] == str(
-        Path("PROJECT_ALPHA") / "2026" / "HS" / "002" / "1.pdf"
+        Path("PROJECT_ALPHA") / "2026" / "HS" / "002"
     )
+    assert row["record_key"] == "2026/HS/002"
     assert total == 1
     assert records[0]["record_key"] == "2026/HS/002"
     assert records[0]["backup_status"] == "NOT_BACKED_UP"
@@ -230,6 +231,27 @@ def test_manual_record_can_create_client_folder(tmp_path: Path) -> None:
         / "HS"
         / "010"
     ).is_dir()
+
+
+def test_assignment_keeps_completion_dates_empty_until_work_finishes(tmp_path: Path) -> None:
+    db = Database(tmp_path / "app.sqlite3")
+    project_id = _create_project(db, tmp_path)
+    personnel_id = db.save_personnel(
+        Personnel(None, project_id, "NV01", "Người Scan", "Scanner")
+    )
+
+    db.save_record_assignment(
+        project_id=project_id,
+        record_key="2026/HS/010",
+        personnel_id=personnel_id,
+        work_date="09/07/2026",
+        assignment_kind="scan",
+    )
+
+    workflow = db.get_record_workflow(project_id, "2026/HS/010")
+    assert workflow["scanner_id"] == personnel_id
+    assert workflow["scan_date"] == ""
+    assert all(paper["scan_date"] == "" for paper in workflow["paper_statuses"])
 
 
 def test_project_can_enable_subset_of_paper_formats(tmp_path: Path) -> None:

@@ -157,6 +157,20 @@ class ReportService:
             ],
         )
 
+        paper_sizes = workbook.create_sheet("Paper Sizes")
+        _write_rows(
+            paper_sizes,
+            ["paper_code", "page_count", "file_count"],
+            [
+                {
+                    "paper_code": row.paper_code,
+                    "page_count": row.page_count,
+                    "file_count": row.file_count,
+                }
+                for row in stats.paper_size_summary(project_id, date_from, date_to)
+            ],
+        )
+
         ratio = stats.completion_ratio(project_id)
         latency = stats.done_to_backup_latency(project_id, date_from, date_to)
         summary = workbook.create_sheet("Summary")

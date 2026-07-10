@@ -207,7 +207,7 @@ class MapfileService:
         project_id: int,
         record_parts: list[str],
         *,
-        file_name: str = "1.pdf",
+        file_name: str = "",
         client_code: str | None = None,
         workstation_owner: str = "",
         workstation_date: str = "",
@@ -224,7 +224,7 @@ class MapfileService:
         directory_levels = self.db.list_directory_levels(project_id)
         raw: dict[str, Any] = {
             profile.project_column: project.project_code,
-            profile.file_name_column: normalize_cell(file_name or "1.pdf"),
+            profile.file_name_column: normalize_cell(file_name),
         }
         if clean_parts:
             raw[profile.year_column] = clean_parts[0]
@@ -236,9 +236,11 @@ class MapfileService:
             if index < len(directory_levels):
                 raw[directory_levels[index].display_name] = value
 
-        expected = str(
-            Path(project.project_code.strip()) / Path(*clean_parts) / raw[profile.file_name_column]
-        )
+        record_key = "/".join(clean_parts)
+        expected_parts = [project.project_code.strip(), *clean_parts]
+        if raw[profile.file_name_column]:
+            expected_parts.append(raw[profile.file_name_column])
+        expected = str(Path(*expected_parts))
         import_id = self.db.latest_mapfile_import_id(project_id)
         if import_id is None:
             import_id = self.db.create_mapfile_import(
@@ -255,7 +257,7 @@ class MapfileService:
                 work_date=workstation_date,
                 task_name=workstation_task,
             )
-        row_id = self.db.append_mapfile_row(import_id, raw, expected)
+        row_id = self.db.append_mapfile_row(import_id, raw, expected, record_key=record_key)
         self.reconcile_row(project_id, row_id)
         self.db.record_audit(
             "MAPFILE_ROW_ADDED",

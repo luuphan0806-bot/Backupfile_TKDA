@@ -12,6 +12,7 @@ from .constants import (
     STATUS_HASH_PENDING,
     STATUS_INVALID_STRUCTURE,
     STATUS_LOCKED,
+    STATUS_VERIFIED_HASH,
     STATUS_WAITING_STABLE,
 )
 from .db import Database
@@ -27,6 +28,15 @@ from .filesystem import (
     validate_project_file,
 )
 from .models import BackupOutcome, Client, DiscoveredFile, Project
+from .pdf_analysis import analyze_pdf_paper_counts
+
+
+COUNTABLE_BACKUP_STATUSES = {
+    STATUS_HASH_PENDING,
+    STATUS_VERIFIED_HASH,
+    STATUS_LOCKED,
+    STATUS_ALREADY_EXISTS,
+}
 
 
 class BackupManager:
@@ -167,6 +177,7 @@ class BackupManager:
                         verified=True,
                         locked=True,
                     )
+                    self._sync_record_scan_counts(project, item.relative_project_path)
                     return BackupOutcome(STATUS_ALREADY_EXISTS, "Same content exists", dest, backup_file_id)
                 self.db.update_backup_status(
                     backup_file_id,
@@ -190,6 +201,7 @@ class BackupManager:
                     str(dest),
                     project_id=project.id,
                 )
+                self._sync_record_scan_counts(project, item.relative_project_path)
                 return BackupOutcome(STATUS_CONFLICT, "Different content exists", dest, backup_file_id)
 
             self.db.update_backup_status(backup_file_id, STATUS_COPYING)
@@ -215,6 +227,7 @@ class BackupManager:
                 str(dest),
                 project_id=project.id,
             )
+            self._sync_record_scan_counts(project, item.relative_project_path)
             return BackupOutcome(STATUS_HASH_PENDING, "Copied", dest, backup_file_id)
         except Exception as exc:
             self.db.update_backup_status(backup_file_id, STATUS_ERROR, str(exc))
@@ -222,9 +235,55 @@ class BackupManager:
                 "ERROR", str(exc), item.client_code, str(item.source_path), str(dest),
                 project_id=project.id,
             )
+            self._sync_record_scan_counts(project, item.relative_project_path)
             return BackupOutcome(STATUS_ERROR, str(exc), dest, backup_file_id)
         finally:
             self.db.release_lock(lock_key, lock_owner)
+
+    def _sync_record_scan_counts(self, project: Project, relative_project_path: Path) -> None:
+        record_key = str(relative_project_path.parent).replace("\\", "/").strip("/")
+        if not record_key or not project.id:
+            return
+        totals: dict[str, dict[str, int]] = {}
+        for row in self.db.list_backup_files_for_record(
+            project.id,
+            record_key,
+            statuses=COUNTABLE_BACKUP_STATUSES,
+        ):
+            path = Path(row["dest_path"])
+            if not path.exists():
+                path = Path(row["source_path"])
+            try:
+                analysis = analyze_pdf_paper_counts(path)
+            except Exception as exc:
+                self.db.record_audit(
+                    "PDF_PAGE_COUNT_ERROR",
+                    f"Could not count PDF pages for {path}: {exc}",
+                    row["client_code"],
+                    row["source_path"],
+                    row["dest_path"],
+                    project_id=project.id,
+                )
+                continue
+            if analysis.unknown_pages:
+                self.db.record_audit(
+                    "PDF_PAGE_SIZE_UNKNOWN",
+                    f"{analysis.unknown_pages} page(s) did not match ISO 216 A-series in {path}",
+                    row["client_code"],
+                    row["source_path"],
+                    row["dest_path"],
+                    project_id=project.id,
+                )
+            self.db.save_backup_file_paper_sizes(int(row["id"]), analysis.exact_pages)
+            for code, count in analysis.counts.items():
+                bucket = totals.setdefault(code, {"pages": 0, "files": 0})
+                bucket["pages"] += count.pages
+                bucket["files"] += count.files
+        self.db.save_automated_scan_counts(
+            project_id=project.id,
+            record_key=record_key,
+            paper_counts=totals,
+        )
 
     def backup_single_mapfile_row(self, project_id: int, row_id: int) -> BackupOutcome:
         """Backup exactly the 1 file referenced by a mapfile row, on demand.
@@ -305,6 +364,47 @@ class BackupManager:
         raise FileNotFoundError(
             f"Could not find the physical file for mapfile row #{row_id} on any workstation"
         )
+
+    def backup_record(self, project_id: int, record_key: str) -> dict[str, int]:
+        """Backup every discovered PDF that belongs to one system mapfile record."""
+        project = self.db.get_project(project_id)
+        if not project or not project.enabled:
+            raise ValueError("Project is not configured or is disabled")
+        levels = self.db.list_directory_levels(project_id)
+        if not levels:
+            raise ValueError("Configure at least one project directory level")
+        target_key = record_key.strip().replace("\\", "/").strip("/")
+        if not target_key:
+            raise ValueError("Record key is required")
+        numeric_sequence_check = self.db.get_project_settings(project_id).numeric_sequence_check
+        totals = {"processed": 0, "errors": 0, "conflicts": 0}
+        for client in self.db.list_clients(project_id):
+            if not client.enabled:
+                continue
+            share = Path(client.share_path)
+            if not share.exists():
+                continue
+            discovered, _invalid = discover_files(
+                client.client_code,
+                share,
+                project_id,
+                project.project_code,
+                levels,
+                numeric_sequence_check=numeric_sequence_check,
+            )
+            for item in discovered:
+                item_key = str(item.relative_project_path.parent).replace("\\", "/").strip("/")
+                if item_key != target_key:
+                    continue
+                outcome = self.process_file(project, item)
+                totals["processed"] += 1
+                if outcome.status == STATUS_ERROR:
+                    totals["errors"] += 1
+                elif outcome.status == STATUS_CONFLICT:
+                    totals["conflicts"] += 1
+        if totals["processed"] == 0:
+            raise FileNotFoundError(f"Không tìm thấy PDF cho hồ sơ {target_key} trên máy trạm.")
+        return totals
 
     def verify_hash_pending(self, project_id: int, limit: int = 100) -> int:
         rows = self.db.list_backup_files(project_id, statuses=[STATUS_HASH_PENDING], limit=limit)
