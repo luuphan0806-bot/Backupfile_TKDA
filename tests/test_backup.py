@@ -10,7 +10,7 @@ from pypdf import PdfWriter
 from scan_backup_manager.backup import BackupManager
 from scan_backup_manager.constants import STATUS_CONFLICT, STATUS_HASH_PENDING
 from scan_backup_manager.db import Database
-from scan_backup_manager.models import Client, DirectoryLevel, Project, ProjectSettings
+from scan_backup_manager.models import Client, DirectoryLevel, Personnel, Project, ProjectSettings
 from scan_backup_manager.pdf_analysis import classify_pdf_page, display_bucket_for_iso_code
 
 
@@ -139,7 +139,7 @@ def test_backup_recomputes_pdf_counts_without_double_counting(tmp_path: Path) ->
     manager.run_all_enabled(project_id)
 
     records, _total = db.list_system_records_page(project_id)
-    assert records[0]["record_status"] == "PENDING_PAPER"
+    assert records[0]["record_status"] == "PENDING_CHECK"
     assert records[0]["paper_statuses"]["A4"]["scan_pages"] == 1
     assert records[0]["paper_statuses"]["A4"]["scan_files"] == 1
     assert records[0]["paper_statuses"]["A3"]["scan_date"] == ""
@@ -168,6 +168,54 @@ def test_backup_does_not_overwrite_admin_completed_status(tmp_path: Path) -> Non
     records, _total = db.list_system_records_page(project_id)
     assert records[0]["record_status"] == "COMPLETED"
     assert records[0]["paper_statuses"]["A4"]["scan_pages"] == 1
+
+
+def test_backup_waits_for_a3_when_assignment_marks_a3_present(tmp_path: Path) -> None:
+    db, project_id = make_db(tmp_path)
+    make_source_pdf(tmp_path, "1.pdf", [(210, 297)])
+    db.save_client(Client(None, project_id, "SCAN01", "Staff", str(tmp_path / "share"), True))
+    db.save_personnel(
+        Personnel(None, project_id, "NV01", "Nguyen Van A", "Scanner")
+    )
+    personnel = db.list_personnel(project_id)[0]
+    db.save_record_assignment(
+        project_id=project_id,
+        record_key="2023/HS/123",
+        personnel_id=int(personnel.id),
+        work_date="10/07/2026",
+        assignment_kind="scan",
+        paper_presence={"A3": True},
+    )
+
+    BackupManager(db).run_all_enabled(project_id)
+
+    records, _total = db.list_system_records_page(project_id)
+    assert records[0]["record_status"] == "PENDING_PAPER"
+    assert records[0]["paper_statuses"]["A3"]["scan_status"] == "PENDING_SCAN"
+
+
+def test_backup_moves_to_check_when_assignment_marks_a3_not_present(tmp_path: Path) -> None:
+    db, project_id = make_db(tmp_path)
+    make_source_pdf(tmp_path, "1.pdf", [(210, 297)])
+    db.save_client(Client(None, project_id, "SCAN01", "Staff", str(tmp_path / "share"), True))
+    db.save_personnel(
+        Personnel(None, project_id, "NV01", "Nguyen Van A", "Scanner")
+    )
+    personnel = db.list_personnel(project_id)[0]
+    db.save_record_assignment(
+        project_id=project_id,
+        record_key="2023/HS/123",
+        personnel_id=int(personnel.id),
+        work_date="10/07/2026",
+        assignment_kind="scan",
+        paper_presence={"A3": False},
+    )
+
+    BackupManager(db).run_all_enabled(project_id)
+
+    records, _total = db.list_system_records_page(project_id)
+    assert records[0]["record_status"] == "PENDING_CHECK"
+    assert records[0]["paper_statuses"]["A3"]["scan_status"] == "NOT_PRESENT"
 
 
 def test_backup_record_only_processes_matching_record(tmp_path: Path) -> None:

@@ -63,14 +63,10 @@ def build(ctx) -> ft.Control:
         {"search": "", "page": 0},
     )
     state.setdefault("flash", "")
-    state.setdefault("selected_records", set())
-    state.setdefault("clipboard_records", [])
     state.setdefault("filters", {})
     state.setdefault("page_size", DEFAULT_PAGE_SIZE)
     state.setdefault("column_weights", {})
     state.setdefault("column_widths", {})
-    if not isinstance(state["selected_records"], set):
-        state["selected_records"] = set(state["selected_records"])
     if int(state.get("page_size", DEFAULT_PAGE_SIZE)) not in PAGE_SIZE_OPTIONS:
         state["page_size"] = DEFAULT_PAGE_SIZE
     if not isinstance(state.get("column_weights"), dict):
@@ -598,164 +594,6 @@ def build(ctx) -> ft.Control:
             ),
         )
 
-    def selected_record_keys() -> list[str]:
-        selected = state["selected_records"]
-        return [record["record_key"] for record in records if record["record_key"] in selected]
-
-    def workflow_payload(record_key: str) -> dict:
-        workflow = ctx.db.get_record_workflow(ctx.project_id, record_key)
-        return {
-            "scanner_id": workflow.get("scanner_id"),
-            "scan_date": workflow.get("scan_date", ""),
-            "checker_id": workflow.get("checker_id"),
-            "check_date": workflow.get("check_date", ""),
-            "check_pages": workflow.get("check_pages", 0),
-            "check_files": workflow.get("check_files", 0),
-            "record_status": workflow.get("record_status", "NOT_STARTED"),
-            "notes": workflow.get("notes", ""),
-            "paper_statuses": [
-                {
-                    "paper_format_id": paper["paper_format_id"],
-                    "scanner_id": paper.get("scanner_id"),
-                    "scan_date": paper.get("scan_date", ""),
-                    "scan_status": paper["scan_status"],
-                    "scan_pages": str(paper["scan_pages"]),
-                    "scan_files": str(paper.get("scan_files", 0)),
-                    "check_pages": str(paper["check_pages"]),
-                    "notes": paper["notes"],
-                }
-                for paper in workflow["paper_statuses"]
-            ],
-        }
-
-    def apply_workflow(record_key: str, payload: dict) -> None:
-        ctx.db.save_record_workflow(
-            project_id=ctx.project_id,
-            record_key=record_key,
-            scanner_id=payload["scanner_id"],
-            scan_date=payload["scan_date"],
-            checker_id=payload["checker_id"],
-            check_date=payload["check_date"],
-            check_pages=payload["check_pages"],
-            check_files=payload["check_files"],
-            record_status=payload["record_status"],
-            notes=payload["notes"],
-            paper_statuses=payload["paper_statuses"],
-        )
-
-    def assignment_payload(record_key: str) -> dict:
-        workflow = workflow_payload(record_key)
-        return {
-            key: workflow[key]
-            for key in (
-                "scanner_id",
-                "scan_date",
-                "checker_id",
-                "check_date",
-                "check_pages",
-                "check_files",
-                "record_status",
-                "notes",
-            )
-        }
-
-    def apply_assignment_payload(record_key: str, payload: dict) -> None:
-        current = workflow_payload(record_key)
-        current.update(payload)
-        apply_workflow(record_key, current)
-
-    def copy_selected_rows() -> None:
-        keys = selected_record_keys()
-        if not keys:
-            state["flash"] = "Chưa chọn dòng để sao chép."
-            ctx.refresh()
-            return
-        state["clipboard_records"] = [
-            {"record_key": key, "workflow": workflow_payload(key)} for key in keys
-        ]
-        state["flash"] = f"Đã sao chép {len(keys)} dòng."
-        ctx.refresh()
-
-    def paste_copied_rows() -> None:
-        copied = state.get("clipboard_records") or []
-        if not copied:
-            state["flash"] = "Clipboard chưa có dòng để dán."
-            ctx.refresh()
-            return
-        new_keys = []
-        try:
-            for item in copied:
-                new_key = ctx.mapfiles.duplicate_manual_record(
-                    ctx.project_id, item["record_key"]
-                )
-                apply_workflow(new_key, item["workflow"])
-                new_keys.append(new_key)
-        except ValueError as exc:
-            status_banner.value = str(exc)
-            status_banner.color = ft.Colors.ERROR
-            ctx.page.update()
-            return
-        state["selected_records"] = set(new_keys)
-        state["flash"] = f"Đã dán {len(new_keys)} dòng mới."
-        ctx.refresh()
-
-    def fill_down_selected_rows() -> None:
-        keys = selected_record_keys()
-        if not keys:
-            state["flash"] = "Chọn dòng cần điền xuống bằng Ctrl+D."
-            ctx.refresh()
-            return
-        if len(keys) == 1:
-            selected_index = next(
-                (
-                    index
-                    for index, record in enumerate(records)
-                    if record["record_key"] == keys[0]
-                ),
-                -1,
-            )
-            if selected_index <= 0:
-                state["flash"] = "Ctrl+D cần một dòng phía trên làm nguồn."
-                ctx.refresh()
-                return
-            source_key = records[selected_index - 1]["record_key"]
-            targets = keys
-        else:
-            source_key = keys[0]
-            targets = keys[1:]
-        if not targets:
-            state["flash"] = "Chọn thêm dòng bên dưới để điền dữ liệu."
-            ctx.refresh()
-            return
-        payload = assignment_payload(source_key)
-        try:
-            for key in targets:
-                apply_assignment_payload(key, payload)
-        except ValueError as exc:
-            status_banner.value = str(exc)
-            status_banner.color = ft.Colors.ERROR
-            ctx.page.update()
-            return
-        state["flash"] = f"Đã điền dữ liệu từ {source_key} xuống {len(targets)} dòng."
-        ctx.refresh()
-
-    def on_keyboard(event: ft.KeyboardEvent) -> None:
-        if (
-            getattr(ctx.shell, "current_project_id", None) != ctx.project_id
-            or getattr(ctx, "tab_index", None) != 2
-            or not event.ctrl
-        ):
-            return
-        key = event.key.upper()
-        if key == "C":
-            copy_selected_rows()
-        elif key == "V":
-            paste_copied_rows()
-        elif key == "D":
-            fill_down_selected_rows()
-
-    ctx.page.on_keyboard_event = on_keyboard
-
     def new_record_keys() -> list[tuple[str, str]]:
         if directory_levels:
             return [
@@ -810,6 +648,9 @@ def build(ctx) -> ft.Control:
     def assignment_kind(job_label: str, job_code: str) -> str:
         text = normalize_lookup(f"{job_code} {job_label}")
         return "check" if "check" in text else "scan"
+
+    def job_implies_a3(job_label: str, job_code: str) -> bool:
+        return "a3" in normalize_lookup(f"{job_code} {job_label}")
 
     def copy_backup_files_for_check(record_key: str, target_folder: Path) -> int:
         rows = ctx.db.list_backup_files_for_record(
@@ -872,6 +713,13 @@ def build(ctx) -> ft.Control:
         finish_previous_checkbox = ft.Checkbox(
             label="Chốt việc cũ của nhân sự và sao lưu trước khi giao việc mới",
             value=False,
+        )
+        a3_current = dict(record.get("paper_statuses", {}).get("A3") or {})
+        a3_presence_checkbox = ft.Checkbox(
+            label="Hồ sơ có A3 cần scan tiếp",
+            value=a3_current.get("scan_status") in {"PENDING_SCAN", "SCANNED", "CHECKED"}
+            or int(a3_current.get("scan_pages", 0) or 0) > 0
+            or int(a3_current.get("scan_files", 0) or 0) > 0,
         )
         error_text = ft.Text("", color=DANGER)
 
@@ -936,6 +784,10 @@ def build(ctx) -> ft.Control:
                     personnel_id=personnel_id,
                     work_date=work_date_display,
                     assignment_kind=assignment_kind(job.display_name, job.job_code),
+                    paper_presence={
+                        "A3": bool(a3_presence_checkbox.value)
+                        or job_implies_a3(job.display_name, job.job_code)
+                    },
                 )
                 copied_for_check = 0
                 if assignment_kind(job.display_name, job.job_code) == "check":
@@ -964,6 +816,7 @@ def build(ctx) -> ft.Control:
                     ft.Text("/".join(parts), color=TEXT_MUTED),
                     ft.Row([job_dropdown, personnel_dropdown, client_dropdown], wrap=True, spacing=8),
                     finish_previous_checkbox,
+                    a3_presence_checkbox,
                     error_text,
                 ],
             ),
@@ -1009,7 +862,6 @@ def build(ctx) -> ft.Control:
                 return
             ctx.page.pop_dialog()
             state["flash"] = f"Da cap nhat ho so {record['record_key']} -> {new_key}."
-            state["selected_records"] = {new_key}
             ctx.refresh()
 
         dialog = kit.dialog(
@@ -1072,6 +924,10 @@ def build(ctx) -> ft.Control:
         )
         finish_previous_checkbox = ft.Checkbox(
             label="Chot viec cu cua nhan su va sao luu truoc khi giao viec moi",
+            value=False,
+        )
+        a3_presence_checkbox = ft.Checkbox(
+            label="Ho so co A3 can scan tiep",
             value=False,
         )
         error_text = ft.Text("", color=DANGER)
@@ -1147,6 +1003,10 @@ def build(ctx) -> ft.Control:
                     personnel_id=int(person.id),
                     work_date=work_date_display,
                     assignment_kind=assignment_kind(job.display_name, job.job_code),
+                    paper_presence={
+                        "A3": bool(a3_presence_checkbox.value)
+                        or job_implies_a3(job.display_name, job.job_code)
+                    },
                 )
                 copied_for_check = 0
                 if assignment_kind(job.display_name, job.job_code) == "check":
@@ -1181,6 +1041,7 @@ def build(ctx) -> ft.Control:
                     ft.Row([field for _key, _label, field in record_fields], wrap=True, spacing=8),
                     ft.Row([job_dropdown, personnel_dropdown, client_dropdown], wrap=True, spacing=8),
                     finish_previous_checkbox,
+                    a3_presence_checkbox,
                     error_text,
                 ],
             ),
@@ -1496,13 +1357,6 @@ def build(ctx) -> ft.Control:
         data_rows.append(
             ft.DataRow(
                 cells=cells,
-                selected=record["record_key"] in state["selected_records"],
-                on_select_change=lambda event, key=record["record_key"]: (
-                    state["selected_records"].add(key)
-                    if event.control.selected
-                    else state["selected_records"].discard(key),
-                    ctx.page.update(),
-                ),
             )
         )
 
@@ -1528,21 +1382,6 @@ def build(ctx) -> ft.Control:
                 "Thêm công việc mới",
                 icon=ft.Icons.ADD_TASK,
                 on_click=open_create_job_dialog,
-            ),
-            ft.IconButton(
-                icon=ft.Icons.CONTENT_COPY,
-                tooltip="Copy dòng",
-                on_click=lambda _e: copy_selected_rows(),
-            ),
-            ft.IconButton(
-                icon=ft.Icons.CONTENT_PASTE,
-                tooltip="Dán dòng",
-                on_click=lambda _e: paste_copied_rows(),
-            ),
-            ft.IconButton(
-                icon=ft.Icons.VERTICAL_ALIGN_BOTTOM,
-                tooltip="Điền xuống",
-                on_click=lambda _e: fill_down_selected_rows(),
             ),
             search_field,
             ft.FilledButton("Tìm kiếm", icon=ft.Icons.SEARCH, on_click=apply_search),

@@ -2024,6 +2024,7 @@ class Database:
         personnel_id: int,
         work_date: str,
         assignment_kind: str = "scan",
+        paper_presence: dict[str, bool] | None = None,
     ) -> int:
         record_key = record_key.strip().replace("\\", "/").strip("/")
         if not record_key:
@@ -2085,7 +2086,7 @@ class Database:
                     """,
                     (personnel_id, now, workflow["id"]),
                 )
-            return int(
+            workflow_id = int(
                 conn.execute(
                     """
                     SELECT id FROM record_workflows
@@ -2094,6 +2095,44 @@ class Database:
                     (project_id, record_key),
                 ).fetchone()["id"]
             )
+            if paper_presence:
+                formats = {
+                    row["code"]: int(row["id"])
+                    for row in conn.execute(
+                        """
+                        SELECT id, code FROM paper_formats
+                        WHERE project_id=? AND enabled=1
+                        """,
+                        (project_id,),
+                    ).fetchall()
+                }
+                for code, present in paper_presence.items():
+                    format_id = formats.get(code)
+                    if format_id is None:
+                        continue
+                    conn.execute(
+                        """
+                        INSERT INTO record_paper_statuses(
+                            record_id, paper_format_id, scanner_id, scan_date, scan_status,
+                            scan_pages, scan_files, check_pages, notes, updated_at
+                        ) VALUES(?, ?, NULL, '', ?, 0, 0, 0, '', ?)
+                        ON CONFLICT(record_id, paper_format_id) DO UPDATE SET
+                            scan_status=CASE
+                                WHEN record_paper_statuses.scan_pages>0
+                                    OR record_paper_statuses.scan_files>0
+                                THEN record_paper_statuses.scan_status
+                                ELSE excluded.scan_status
+                            END,
+                            updated_at=excluded.updated_at
+                        """,
+                        (
+                            workflow_id,
+                            format_id,
+                            "PENDING_SCAN" if present else "NOT_PRESENT",
+                            now,
+                        ),
+                    )
+            return workflow_id
 
     def save_record_workflow(
         self,
@@ -2348,11 +2387,22 @@ class Database:
                 or int(counts.get("files", 0) or 0) > 0
             }
             has_scan_data = bool(scanned_codes)
-            required_codes = {
+            presence_rows = conn.execute(
+                """
+                SELECT pf.code, rps.scan_status
+                FROM paper_formats pf
+                LEFT JOIN record_paper_statuses rps
+                    ON rps.paper_format_id=pf.id AND rps.record_id=?
+                WHERE pf.project_id=? AND pf.enabled=1
+                """,
+                (workflow_id, project_id),
+            ).fetchall()
+            pending_scan_codes = {
                 row["code"]
-                for row in formats
-                if int(row["requires_separate_scan"] or 0) == 1
+                for row in presence_rows
+                if row["scan_status"] == "PENDING_SCAN"
             }
+            required_codes = scanned_codes | pending_scan_codes
             missing_required_codes = required_codes - scanned_codes
             workflow_row = conn.execute(
                 """
@@ -2381,7 +2431,17 @@ class Database:
                 counts = paper_counts.get(code, {})
                 pages = max(0, int(counts.get("pages", 0) or 0))
                 files = max(0, int(counts.get("files", 0) or 0))
-                status = "SCANNED" if pages or files else "UNKNOWN"
+                existing_status_row = conn.execute(
+                    """
+                    SELECT scan_status FROM record_paper_statuses
+                    WHERE record_id=? AND paper_format_id=?
+                    """,
+                    (workflow_id, paper_format["id"]),
+                ).fetchone()
+                existing_status = (
+                    existing_status_row["scan_status"] if existing_status_row else "UNKNOWN"
+                )
+                status = "SCANNED" if pages or files else existing_status
                 conn.execute(
                     """
                     INSERT INTO record_paper_statuses(
