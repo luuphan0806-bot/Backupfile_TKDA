@@ -4,8 +4,14 @@
 
 $ErrorActionPreference = "Stop"
 
-flet pack src/scan_backup_manager/ui/app.py -n ScanBackupManager --distpath dist -y
+flet pack main.py -n ScanBackupManager --distpath dist -y
+if ($LASTEXITCODE -ne 0) {
+    throw "ScanBackupManager build failed with exit code $LASTEXITCODE"
+}
 pyinstaller --noconfirm --onefile --name ScanBackupService service_main.py --distpath dist --hidden-import win32timezone
+if ($LASTEXITCODE -ne 0) {
+    throw "ScanBackupService build failed with exit code $LASTEXITCODE"
+}
 
 $isccCandidates = @()
 $isccCommand = Get-Command iscc -ErrorAction SilentlyContinue

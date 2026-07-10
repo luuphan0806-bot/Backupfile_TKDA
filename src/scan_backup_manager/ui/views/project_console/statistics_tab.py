@@ -3,7 +3,6 @@ from __future__ import annotations
 from datetime import datetime, timedelta
 
 import flet as ft
-import flet_charts as fc
 
 from ... import kit
 from ...date_format import DISPLAY_DATE_HINT, display_to_iso, iso_to_display
@@ -36,6 +35,59 @@ def _time_label(value: str) -> str:
         return datetime.fromisoformat(value).strftime("%H:%M")
     except ValueError:
         return value[11:16] if len(value) >= 16 else value
+
+
+def _daily_bar_view(days: list[str], daily_totals: dict[str, dict[str, int]], max_y: int) -> ft.Control:
+    if not days:
+        return ft.Container(
+            height=160,
+            alignment=ft.Alignment.CENTER,
+            content=ft.Text("Không có công việc trong khoảng ngày đã chọn.", color=TEXT_MUTED),
+        )
+    rows: list[ft.Control] = []
+    for day in days:
+        total = daily_totals[day]["total"]
+        check = daily_totals[day]["check"]
+        total_width = max(8, int(360 * total / max_y))
+        check_width = max(0, int(360 * check / max_y))
+        rows.append(
+            ft.Row(
+                spacing=10,
+                vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                controls=[
+                    ft.Text(day[5:], width=48, size=11, color=TEXT_MUTED),
+                    ft.Stack(
+                        width=380,
+                        height=24,
+                        controls=[
+                            ft.Container(
+                                width=360,
+                                height=10,
+                                top=7,
+                                bgcolor=ft.Colors.with_opacity(0.12, CHART_TOTAL),
+                                border_radius=6,
+                            ),
+                            ft.Container(
+                                width=total_width,
+                                height=10,
+                                top=7,
+                                bgcolor=CHART_TOTAL,
+                                border_radius=6,
+                            ),
+                            ft.Container(
+                                width=check_width,
+                                height=6,
+                                top=9,
+                                bgcolor=CHART_CHECK,
+                                border_radius=6,
+                            ),
+                        ],
+                    ),
+                    ft.Text(f"{total} / {check}", size=11, color=TEXT_MUTED),
+                ],
+            )
+        )
+    return ft.Column(spacing=8, controls=rows)
 
 
 def build(ctx) -> ft.Control:
@@ -83,55 +135,7 @@ def build(ctx) -> ft.Control:
 
         days = sorted(daily_totals)
         max_y = max([1] + [daily_totals[day]["total"] for day in days])
-        chart_groups = [
-            fc.BarChartGroup(
-                x=index,
-                rods=[
-                    fc.BarChartRod(
-                        from_y=0,
-                        to_y=daily_totals[day]["total"],
-                        color=CHART_TOTAL,
-                        width=12,
-                        border_radius=4,
-                        tooltip=f"{day}: {daily_totals[day]['total']} công việc",
-                    ),
-                    fc.BarChartRod(
-                        from_y=0,
-                        to_y=daily_totals[day]["check"],
-                        color=CHART_CHECK,
-                        width=12,
-                        border_radius=4,
-                        tooltip=f"{day}: {daily_totals[day]['check']} check",
-                    ),
-                ],
-            )
-            for index, day in enumerate(days)
-        ]
-        chart = (
-            fc.BarChart(
-                groups=chart_groups,
-                interactive=True,
-                max_y=max_y * 1.2,
-                bgcolor=ft.Colors.TRANSPARENT,
-                bottom_axis=fc.ChartAxis(
-                    labels=[
-                        fc.ChartAxisLabel(
-                            value=index,
-                            label=ft.Text(day[5:], size=10, color=TEXT_MUTED),
-                        )
-                        for index, day in enumerate(days)
-                    ],
-                    label_size=32,
-                ),
-                height=260,
-            )
-            if rows
-            else ft.Container(
-                height=160,
-                alignment=ft.Alignment.CENTER,
-                content=ft.Text("Không có công việc trong khoảng ngày đã chọn.", color=TEXT_MUTED),
-            )
-        )
+        chart = _daily_bar_view(days, daily_totals, max_y)
 
         detail_table = ft.DataTable(
             columns=[

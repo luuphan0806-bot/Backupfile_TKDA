@@ -2,7 +2,7 @@
 
 
 a = Analysis(
-    ['src\\scan_backup_manager\\ui\\app.py'],
+    ['main.py'],
     pathex=[],
     binaries=[],
     datas=[],
@@ -35,5 +35,5 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
-    version='C:\\Users\\luuph\\AppData\\Local\\Temp\\e8776c8a-04d6-433f-a7c0-5266106ce1e6',
+    version=None,
 )
