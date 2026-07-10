@@ -407,6 +407,117 @@ def test_backup_single_mapfile_row_missing_file_raises(tmp_path: Path) -> None:
         BackupManager(db).backup_single_mapfile_row(project_id, row["id"])
 
 
+def make_check_folder_pdf(
+    tmp_path: Path, name: str, pages_mm: list[tuple[int, int]]
+) -> Path:
+    """A checker's workstation copy of record 2023/HS/123."""
+    source = (
+        tmp_path
+        / "share"
+        / "CSDL_SOHOA_A"
+        / "Nguoi Check"
+        / "10-07-2026"
+        / "Check Scan"
+        / "2023"
+        / "HS"
+        / "123"
+        / name
+    )
+    source.parent.mkdir(parents=True, exist_ok=True)
+    writer = PdfWriter()
+    for width_mm, height_mm in pages_mm:
+        writer.add_blank_page(
+            width=width_mm * POINTS_PER_MM,
+            height=height_mm * POINTS_PER_MM,
+        )
+    with source.open("wb") as handle:
+        writer.write(handle)
+    return source
+
+
+def test_crawler_skips_registered_check_folder_and_does_not_double_count(
+    tmp_path: Path,
+) -> None:
+    db, project_id = make_db(tmp_path)
+    make_source_pdf(tmp_path, "1.pdf", [(210, 297)])
+    db.save_client(Client(None, project_id, "SCAN01", "Staff", str(tmp_path / "share"), True))
+    checker_id = db.save_personnel(
+        Personnel(None, project_id, "NV02", "Nguoi Check", "Checker")
+    )
+    manager = BackupManager(db)
+    manager.run_all_enabled(project_id)
+    records, _total = db.list_system_records_page(project_id)
+    assert records[0]["record_status"] == "PENDING_CHECK"
+    assert records[0]["paper_statuses"]["A4"]["scan_pages"] == 1
+
+    # The checker gets a (modified) copy in their registered folder; without
+    # the exclusion the crawler would re-ingest it as scan data and conflict.
+    checker_file = make_check_folder_pdf(tmp_path, "1.pdf", [(210, 297), (210, 297)])
+    db.save_check_assignment(
+        project_id=project_id,
+        record_key="2023/HS/123",
+        checker_id=checker_id,
+        client_code="SCAN01",
+        folder_path=str(checker_file.parent),
+    )
+
+    manager.run_all_enabled(project_id)
+
+    records, _total = db.list_system_records_page(project_id)
+    assert records[0]["paper_statuses"]["A4"]["scan_pages"] == 1
+    assert db.list_conflicts(project_id) == []
+    assert all(
+        "Nguoi Check" not in row["source_path"]
+        for row in db.list_backup_files(project_id, limit=None)
+    )
+
+
+def test_backup_check_record_records_counts_and_completes(tmp_path: Path) -> None:
+    db, project_id = make_db(tmp_path)
+    make_source_pdf(tmp_path, "1.pdf", [(210, 297)])
+    db.save_client(Client(None, project_id, "SCAN01", "Staff", str(tmp_path / "share"), True))
+    checker_id = db.save_personnel(
+        Personnel(None, project_id, "NV02", "Nguoi Check", "Checker")
+    )
+    manager = BackupManager(db)
+    manager.run_all_enabled(project_id)
+    checker_file = make_check_folder_pdf(tmp_path, "1.pdf", [(210, 297), (210, 297)])
+    db.save_check_assignment(
+        project_id=project_id,
+        record_key="2023/HS/123",
+        checker_id=checker_id,
+        client_code="SCAN01",
+        folder_path=str(checker_file.parent),
+    )
+
+    result = manager.backup_check_record(project_id, "2023/HS/123")
+
+    assert result["processed"] == 1
+    assert result["errors"] == 0
+    workflow = db.get_record_workflow(project_id, "2023/HS/123")
+    assert workflow["check_pages"] == 2
+    assert workflow["check_files"] == 1
+    assert workflow["checker_id"] == checker_id
+    assert workflow["check_date"] == datetime.now().strftime("%Y-%m-%d")
+    assert workflow["record_status"] == "COMPLETED"
+    check_dest = (
+        tmp_path / "backup" / "CSDL_SOHOA_A" / "_CHECK" / "2023" / "HS" / "123" / "1.pdf"
+    )
+    assert check_dest.is_file()
+    # Scan-side data stays untouched by the check ingestion.
+    records, _total = db.list_system_records_page(project_id)
+    assert records[0]["paper_statuses"]["A4"]["scan_pages"] == 1
+    assignments = db.list_check_assignments(project_id, record_key="2023/HS/123")
+    assert assignments[0]["status"] == "RECORDED"
+
+
+def test_backup_check_record_requires_assignment(tmp_path: Path) -> None:
+    db, project_id = make_db(tmp_path)
+
+    with pytest.raises(ValueError, match="chưa được giao check"):
+        BackupManager(db).backup_check_record(project_id, "2023/HS/123")
+
+
 def test_backup_single_mapfile_row_skips_invalid_candidate(tmp_path: Path) -> None:
     db, project_id = make_db(tmp_path)
     settings = db.get_project_settings(project_id)

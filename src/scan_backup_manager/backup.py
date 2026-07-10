@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import os
 import shutil
 import time
 from pathlib import Path
 
 from .constants import (
+    COUNTABLE_BACKUP_STATUSES,
     STATUS_ALREADY_EXISTS,
     STATUS_CONFLICT,
     STATUS_COPYING,
@@ -31,17 +33,35 @@ from .models import BackupOutcome, Client, DiscoveredFile, Project
 from .pdf_analysis import analyze_pdf_paper_counts
 
 
-COUNTABLE_BACKUP_STATUSES = {
-    STATUS_HASH_PENDING,
-    STATUS_VERIFIED_HASH,
-    STATUS_LOCKED,
-    STATUS_ALREADY_EXISTS,
-}
+CHECK_DEST_SUBDIR = "_CHECK"
+
+
+def _normalized_folder(path: str) -> str:
+    return os.path.normcase(os.path.normpath(str(path)))
+
+
+def _is_under_check_folder(path: Path | str, folders: list[str]) -> bool:
+    normalized = _normalized_folder(str(path))
+    for folder in folders:
+        if normalized == folder or normalized.startswith(folder + os.sep):
+            return True
+    return False
 
 
 class BackupManager:
     def __init__(self, db: Database):
         self.db = db
+
+    def _active_check_folders(self, project_id: int) -> list[str]:
+        """Workstation folders handed to checkers. Everything below them is the
+        checker's working copy and must never be ingested as scan data — a
+        RECORDED folder stays excluded so re-crawls don't double count."""
+        return [
+            _normalized_folder(row["folder_path"])
+            for row in self.db.list_check_assignments(
+                project_id, statuses=("ASSIGNED", "RECORDED")
+            )
+        ]
 
     def run_all_enabled(self, project_id: int, *, job_id: int | None = None) -> dict[str, int]:
         totals = {"clients": 0, "processed": 0, "errors": 0, "conflicts": 0}
@@ -93,8 +113,11 @@ class BackupManager:
             levels,
             numeric_sequence_check=numeric_sequence_check,
         )
+        check_folders = self._active_check_folders(project.id or 0)
 
         for source_path, message, project_code, relative in invalid:
+            if _is_under_check_folder(source_path, check_folders):
+                continue
             dest = Path(project.backup_root) / project_code / (relative or Path(source_path.name))
             self.db.upsert_backup_file(
                 project_id=project.id or 0,
@@ -119,6 +142,8 @@ class BackupManager:
             counts["errors"] += 1
 
         for item in discovered:
+            if _is_under_check_folder(item.source_path, check_folders):
+                continue
             outcome = self.process_file(project, item, job_id=job_id)
             counts["processed"] += 1
             if outcome.status == STATUS_ERROR:
@@ -128,9 +153,24 @@ class BackupManager:
         return counts
 
     def process_file(
-        self, project: Project, item: DiscoveredFile, *, job_id: int | None = None
+        self,
+        project: Project,
+        item: DiscoveredFile,
+        *,
+        job_id: int | None = None,
+        file_kind: str = "SCAN",
     ) -> BackupOutcome:
-        dest = Path(project.backup_root) / item.project_code / item.relative_project_path
+        # Check copies get their own destination subtree so they can never
+        # collide (ALREADY_EXISTS/CONFLICT) with the scanner's backup of the
+        # same relative path. record_key stays correct either way because it is
+        # derived from relative_project_path, not from dest.
+        if file_kind == "CHECK":
+            dest = (
+                Path(project.backup_root) / item.project_code
+                / CHECK_DEST_SUBDIR / item.relative_project_path
+            )
+        else:
+            dest = Path(project.backup_root) / item.project_code / item.relative_project_path
         staging_dir = Path(project.staging_dir) / str(project.id or 0) / str(job_id or "manual")
         stability_wait_seconds = self.db.get_project_settings(project.id or 0).stability_wait_seconds
         backup_file_id = self.db.upsert_backup_file(
@@ -143,6 +183,7 @@ class BackupManager:
             file_size=item.file_size,
             source_mtime=iso_from_mtime(item.source_mtime),
             status="DISCOVERED",
+            file_kind=file_kind,
         )
         lock_key = f"dest:{dest.resolve()}"
         lock_owner = f"job:{job_id or 'manual'}:{backup_file_id}"
@@ -177,7 +218,7 @@ class BackupManager:
                         verified=True,
                         locked=True,
                     )
-                    self._sync_record_scan_counts(project, item.relative_project_path)
+                    self._sync_record_counts(project, item.relative_project_path, file_kind)
                     return BackupOutcome(STATUS_ALREADY_EXISTS, "Same content exists", dest, backup_file_id)
                 self.db.update_backup_status(
                     backup_file_id,
@@ -201,7 +242,7 @@ class BackupManager:
                     str(dest),
                     project_id=project.id,
                 )
-                self._sync_record_scan_counts(project, item.relative_project_path)
+                self._sync_record_counts(project, item.relative_project_path, file_kind)
                 return BackupOutcome(STATUS_CONFLICT, "Different content exists", dest, backup_file_id)
 
             self.db.update_backup_status(backup_file_id, STATUS_COPYING)
@@ -227,7 +268,7 @@ class BackupManager:
                 str(dest),
                 project_id=project.id,
             )
-            self._sync_record_scan_counts(project, item.relative_project_path)
+            self._sync_record_counts(project, item.relative_project_path, file_kind)
             return BackupOutcome(STATUS_HASH_PENDING, "Copied", dest, backup_file_id)
         except Exception as exc:
             self.db.update_backup_status(backup_file_id, STATUS_ERROR, str(exc))
@@ -235,10 +276,19 @@ class BackupManager:
                 "ERROR", str(exc), item.client_code, str(item.source_path), str(dest),
                 project_id=project.id,
             )
-            self._sync_record_scan_counts(project, item.relative_project_path)
+            self._sync_record_counts(project, item.relative_project_path, file_kind)
             return BackupOutcome(STATUS_ERROR, str(exc), dest, backup_file_id)
         finally:
             self.db.release_lock(lock_key, lock_owner)
+
+    def _sync_record_counts(
+        self, project: Project, relative_project_path: Path, file_kind: str
+    ) -> None:
+        if file_kind == "CHECK":
+            record_key = str(relative_project_path.parent).replace("\\", "/").strip("/")
+            self._sync_record_check_counts(project, record_key)
+        else:
+            self._sync_record_scan_counts(project, relative_project_path)
 
     def _sync_record_scan_counts(self, project: Project, relative_project_path: Path) -> None:
         record_key = str(relative_project_path.parent).replace("\\", "/").strip("/")
@@ -249,6 +299,7 @@ class BackupManager:
             project.id,
             record_key,
             statuses=COUNTABLE_BACKUP_STATUSES,
+            file_kind="SCAN",
         ):
             path = Path(row["dest_path"])
             if not path.exists():
@@ -285,6 +336,96 @@ class BackupManager:
             paper_counts=totals,
         )
 
+    def _sync_record_check_counts(self, project: Project, record_key: str) -> None:
+        """Total the checker's backed-up output for one record and write it into
+        the workflow's check columns (closing PENDING_CHECK → COMPLETED)."""
+        record_key = record_key.strip().replace("\\", "/").strip("/")
+        if not record_key or not project.id:
+            return
+        pages = 0
+        files = 0
+        for row in self.db.list_backup_files_for_record(
+            project.id,
+            record_key,
+            statuses=COUNTABLE_BACKUP_STATUSES,
+            file_kind="CHECK",
+        ):
+            path = Path(row["dest_path"])
+            if not path.exists():
+                path = Path(row["source_path"])
+            try:
+                analysis = analyze_pdf_paper_counts(path)
+            except Exception as exc:
+                self.db.record_audit(
+                    "PDF_PAGE_COUNT_ERROR",
+                    f"Could not count PDF pages for {path}: {exc}",
+                    row["client_code"],
+                    row["source_path"],
+                    row["dest_path"],
+                    project_id=project.id,
+                )
+                continue
+            pages += sum(count.pages for count in analysis.counts.values())
+            files += 1
+        checker_id: int | None = None
+        assignments = self.db.list_check_assignments(project.id, record_key=record_key)
+        if assignments:
+            checker_id = int(assignments[0]["checker_id"])
+        self.db.save_automated_check_counts(
+            project_id=project.id,
+            record_key=record_key,
+            pages=pages,
+            files=files,
+            checker_id=checker_id,
+        )
+
+    def backup_check_record(self, project_id: int, record_key: str) -> dict[str, int]:
+        """Back up the checker's workstation folder for one record as CHECK
+        files and auto-record the check counts."""
+        project = self.db.get_project(project_id)
+        if not project or not project.enabled:
+            raise ValueError("Project is not configured or is disabled")
+        target_key = record_key.strip().replace("\\", "/").strip("/")
+        if not target_key:
+            raise ValueError("Record key is required")
+        assignments = self.db.list_check_assignments(project_id, record_key=target_key)
+        if not assignments:
+            raise ValueError(f"Hồ sơ {target_key} chưa được giao check.")
+        totals = {"processed": 0, "errors": 0, "conflicts": 0}
+        recorded_ids: list[int] = []
+        for assignment in assignments:
+            folder = Path(str(assignment["folder_path"]))
+            if not folder.is_dir():
+                continue
+            for source in sorted(folder.rglob("*")):
+                if not source.is_file() or source.suffix.lower() != ".pdf":
+                    continue
+                stat_result = source.stat()
+                item = DiscoveredFile(
+                    project_id=project_id,
+                    client_code=str(assignment["client_code"]),
+                    source_path=source,
+                    project_code=project.project_code,
+                    relative_project_path=Path(target_key) / source.relative_to(folder),
+                    file_size=stat_result.st_size,
+                    source_mtime=stat_result.st_mtime,
+                )
+                outcome = self.process_file(project, item, file_kind="CHECK")
+                totals["processed"] += 1
+                if outcome.status == STATUS_ERROR:
+                    totals["errors"] += 1
+                elif outcome.status == STATUS_CONFLICT:
+                    totals["conflicts"] += 1
+            recorded_ids.append(int(assignment["id"]))
+        if totals["processed"] == 0:
+            raise FileNotFoundError(
+                f"Không tìm thấy file PDF trong thư mục check của hồ sơ {target_key}."
+            )
+        if not totals["errors"]:
+            for assignment_id in recorded_ids:
+                self.db.mark_check_assignment_recorded(assignment_id)
+        return totals
+
     def backup_single_mapfile_row(self, project_id: int, row_id: int) -> BackupOutcome:
         """Backup exactly the 1 file referenced by a mapfile row, on demand.
 
@@ -312,6 +453,7 @@ class BackupManager:
         relative_within_root = Path(*expected.parts[1:])
         levels = self.db.list_directory_levels(project_id)
         numeric_sequence_check = self.db.get_project_settings(project_id).numeric_sequence_check
+        check_folders = self._active_check_folders(project_id)
 
         for client in self.db.list_clients(project_id):
             if not client.enabled:
@@ -337,6 +479,8 @@ class BackupManager:
                     if resolved in seen or not candidate.is_file():
                         continue
                     seen.add(resolved)
+                    if _is_under_check_folder(candidate, check_folders):
+                        continue
                     validation = validate_project_file(
                         project_root,
                         candidate,
@@ -378,6 +522,7 @@ class BackupManager:
             raise ValueError("Record key is required")
         numeric_sequence_check = self.db.get_project_settings(project_id).numeric_sequence_check
         totals = {"processed": 0, "errors": 0, "conflicts": 0}
+        check_folders = self._active_check_folders(project_id)
         for client in self.db.list_clients(project_id):
             if not client.enabled:
                 continue
@@ -395,6 +540,8 @@ class BackupManager:
             for item in discovered:
                 item_key = str(item.relative_project_path.parent).replace("\\", "/").strip("/")
                 if item_key != target_key:
+                    continue
+                if _is_under_check_folder(item.source_path, check_folders):
                     continue
                 outcome = self.process_file(project, item)
                 totals["processed"] += 1

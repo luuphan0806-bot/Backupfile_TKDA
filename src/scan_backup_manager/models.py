@@ -82,6 +82,7 @@ class JobType:
     display_name: str
     enabled: bool = True
     sort_order: int = 0
+    job_kind: str = "SCAN"
 
 
 @dataclass(slots=True)
@@ -95,6 +96,8 @@ class ProjectTask:
     due_date: str
     priority: str = "NORMAL"
     status: str = "NEW"
+    record_key: str = ""
+    task_kind: str = ""
 
 
 @dataclass(slots=True)

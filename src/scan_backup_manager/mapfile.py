@@ -7,6 +7,7 @@ from typing import Any
 
 from openpyxl import load_workbook
 
+from .constants import COUNTABLE_BACKUP_STATUSES
 from .db import Database
 from .filesystem import find_project_roots, workstation_project_root_name
 from .models import DirectoryLevel, MapfileProfile
@@ -132,7 +133,7 @@ class MapfileService:
         backed_up = {
             str(Path(row["project_code"]) / row["relative_project_path"]): row
             for row in backup_rows
-            if row["status"] in {"HASH_PENDING", "VERIFIED_HASH", "LOCKED", "ALREADY_EXISTS"}
+            if row["status"] in COUNTABLE_BACKUP_STATUSES
         }
 
         matched = 0

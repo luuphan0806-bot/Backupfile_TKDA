@@ -421,6 +421,14 @@ def test_project_job_types_can_be_renamed_and_used_for_manual_work(tmp_path: Pat
         "Scan A0",
         "Check Scan",
     ]
+    kinds = {item.job_code: item.job_kind for item in job_types}
+    assert kinds == {
+        "SCAN_A4": "SCAN",
+        "SCAN_A3": "SCAN",
+        "SCAN_A3_OLD": "SCAN",
+        "SCAN_A0": "SCAN",
+        "CHECK": "CHECK",
+    }
     scan_a4 = next(item for item in job_types if item.job_code == "SCAN_A4")
 
     db.save_job_type(
@@ -431,10 +439,12 @@ def test_project_job_types_can_be_renamed_and_used_for_manual_work(tmp_path: Pat
             "Quét hồ sơ A4",
             True,
             scan_a4.sort_order,
+            "CHECK",
         )
     )
     renamed = next(item for item in db.list_job_types(project.id or 0) if item.job_code == "SCAN_A4")
     assert renamed.display_name == "Quét hồ sơ A4"
+    assert renamed.job_kind == "CHECK"
 
     share = tmp_path / "share"
     db.save_client(Client(None, project.id or 0, "SCAN01", "", str(share), True))

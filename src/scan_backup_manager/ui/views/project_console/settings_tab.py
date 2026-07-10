@@ -677,7 +677,12 @@ def _build_job_types_section(ctx) -> ft.Control:
     status_text = ft.Text("", color=ft.Colors.PRIMARY)
     rows: list[ft.DataRow] = []
 
-    def save_job(item: JobType, name_field: ft.TextField, enabled_field: ft.Checkbox) -> None:
+    def save_job(
+        item: JobType,
+        name_field: ft.TextField,
+        enabled_field: ft.Checkbox,
+        kind_field: ft.Dropdown,
+    ) -> None:
         try:
             db.save_job_type(
                 JobType(
@@ -687,6 +692,7 @@ def _build_job_types_section(ctx) -> ft.Control:
                     name_field.value or "",
                     bool(enabled_field.value),
                     item.sort_order,
+                    kind_field.value or "SCAN",
                 )
             )
         except ValueError as exc:
@@ -701,18 +707,28 @@ def _build_job_types_section(ctx) -> ft.Control:
     for item in job_types:
         name_field = ft.TextField(value=item.display_name, dense=True, width=260)
         enabled_field = ft.Checkbox(value=item.enabled)
+        kind_field = ft.Dropdown(
+            value=item.job_kind or "SCAN",
+            dense=True,
+            width=150,
+            options=[
+                ft.dropdown.Option(key="SCAN", text="Giao scan"),
+                ft.dropdown.Option(key="CHECK", text="Giao check"),
+            ],
+        )
         rows.append(
             ft.DataRow(
                 cells=[
                     ft.DataCell(ft.Text(item.job_code, weight=ft.FontWeight.BOLD)),
                     ft.DataCell(name_field),
+                    ft.DataCell(kind_field),
                     ft.DataCell(enabled_field),
                     ft.DataCell(
                         ft.IconButton(
                             icon=ft.Icons.SAVE_OUTLINED,
                             tooltip="Lưu công việc",
-                            on_click=lambda _e, current=item, field=name_field, enabled=enabled_field: save_job(
-                                current, field, enabled
+                            on_click=lambda _e, current=item, field=name_field, enabled=enabled_field, kind=kind_field: save_job(
+                                current, field, enabled, kind
                             ),
                         )
                     ),
@@ -724,6 +740,7 @@ def _build_job_types_section(ctx) -> ft.Control:
         columns=[
             ft.DataColumn(ft.Text("Mã công việc")),
             ft.DataColumn(ft.Text("Tên hiển thị")),
+            ft.DataColumn(ft.Text("Phân loại")),
             ft.DataColumn(ft.Text("Áp dụng")),
             ft.DataColumn(ft.Text("")),
         ],
@@ -732,7 +749,7 @@ def _build_job_types_section(ctx) -> ft.Control:
 
     return kit.section(
         "Cấu hình công việc",
-        "Admin có thể đổi tên các công việc xuất hiện khi tạo dòng hồ sơ mới.",
+        "Admin đặt tên và phân loại (scan/check) các công việc dùng khi giao việc.",
         ft.Column(
             spacing=10,
             controls=[

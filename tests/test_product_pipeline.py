@@ -48,6 +48,98 @@ def test_v3_to_v4_migration_preserves_project(tmp_path: Path) -> None:
     assert migrated.migration_backup_path.exists()
 
 
+def test_v5_to_v6_migration_reverts_force_completed_records(tmp_path: Path) -> None:
+    db, project_id, _source = configured_db(tmp_path)
+    scanner_id = db.save_personnel(
+        Personnel(None, project_id, "NV01", "Nguyễn Văn A", "Scanner", True)
+    )
+    checker_id = db.save_personnel(
+        Personnel(None, project_id, "NV02", "Nguyễn Văn B", "Checker", True)
+    )
+    formats = {item.code: item for item in db.list_paper_formats(project_id)}
+
+    def scanned(code: str, pages: int) -> dict:
+        return {
+            "paper_format_id": formats[code].id,
+            "scanner_id": scanner_id,
+            "scan_date": "2026-07-01",
+            "scan_status": "SCANNED",
+            "scan_pages": pages,
+            "scan_files": 1,
+            "check_pages": 0,
+            "notes": "",
+        }
+
+    def pending(code: str) -> dict:
+        return {
+            "paper_format_id": formats[code].id,
+            "scanner_id": None,
+            "scan_date": "",
+            "scan_status": "PENDING_SCAN",
+            "scan_pages": 0,
+            "scan_files": 0,
+            "check_pages": 0,
+            "notes": "",
+        }
+
+    common = dict(project_id=project_id, checker_id=None, check_date="",
+                  check_pages=0, check_files=0, record_status="COMPLETED", notes="")
+    # Force-completed, all required papers scanned -> should surface as PENDING_CHECK.
+    db.save_record_workflow(
+        record_key="2026/HS/A", scanner_id=scanner_id, scan_date="2026-07-01",
+        paper_statuses=[scanned("A4", 10)], **common,
+    )
+    # Force-completed but an A3 is still pending -> PENDING_PAPER.
+    db.save_record_workflow(
+        record_key="2026/HS/B", scanner_id=scanner_id, scan_date="2026-07-01",
+        paper_statuses=[scanned("A4", 5), pending("A3")], **common,
+    )
+    # Force-completed without any scan data -> back to SCANNING.
+    db.save_record_workflow(
+        record_key="2026/HS/C", scanner_id=scanner_id, scan_date="",
+        paper_statuses=[], **common,
+    )
+    # Genuinely checked record -> stays COMPLETED.
+    db.save_record_workflow(
+        project_id=project_id, record_key="2026/HS/D", scanner_id=scanner_id,
+        scan_date="2026-07-01", checker_id=checker_id, check_date="2026-07-02",
+        check_pages=10, check_files=1, record_status="COMPLETED", notes="",
+        paper_statuses=[scanned("A4", 10)],
+    )
+    db_path = db.db_path
+    with sqlite3.connect(db_path) as conn:
+        # Legacy task: record key only lives in the description text.
+        conn.execute(
+            """
+            INSERT INTO project_tasks(
+                project_id, task_code, title, description, assignee_id, due_date,
+                priority, status, record_key, task_kind, created_at, updated_at
+            ) VALUES(?, 'LEGACY_TASK', 'Scan A4', 'Thư mục hồ sơ: 2026/HS/A', ?, '',
+                'NORMAL', 'NEW', '', '', '2026-07-01', '2026-07-01')
+            """,
+            (project_id, scanner_id),
+        )
+        conn.execute("UPDATE app_meta SET value='5' WHERE key='schema_version'")
+
+    migrated = Database(db_path)
+
+    statuses = {
+        key: migrated.get_record_workflow(project_id, key)["record_status"]
+        for key in ("2026/HS/A", "2026/HS/B", "2026/HS/C", "2026/HS/D")
+    }
+    assert statuses == {
+        "2026/HS/A": "PENDING_CHECK",
+        "2026/HS/B": "PENDING_PAPER",
+        "2026/HS/C": "SCANNING",
+        "2026/HS/D": "COMPLETED",
+    }
+    legacy_task = next(
+        row for row in migrated.list_tasks(project_id) if row["task_code"] == "LEGACY_TASK"
+    )
+    assert legacy_task["record_key"] == "2026/HS/A"
+    assert legacy_task["task_kind"] == "SCAN"
+
+
 def test_job_claim_prevents_parallel_project_job(tmp_path: Path) -> None:
     db, project_id, _source = configured_db(tmp_path)
     first = db.enqueue_job(project_id, JOB_SCAN, deduplicate=False)

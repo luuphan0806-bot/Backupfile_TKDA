@@ -47,6 +47,30 @@ class PaperSizeSummary:
     file_count: int
 
 
+@dataclass(slots=True)
+class JobQuantityByDay:
+    day: str
+    job_title: str
+    task_kind: str
+    quantity: int
+    completed_count: int
+    personnel_count: int
+
+
+@dataclass(slots=True)
+class PersonnelDailyJobDetail:
+    day: str
+    personnel_code: str
+    full_name: str
+    sequence_number: int
+    job_title: str
+    task_kind: str
+    quantity: int
+    completed_count: int
+    started_at: str
+    last_updated_at: str
+
+
 class StatisticsService:
     """Aggregate queries for the per-project "Thống kê" tab.
 
@@ -221,3 +245,83 @@ class StatisticsService:
             )
             for row in rows
         ]
+
+    def job_quantity_by_day(
+        self, project_id: int, date_from: str, date_to: str
+    ) -> list[JobQuantityByDay]:
+        with self.db.connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT
+                    substr(t.created_at, 1, 10) AS day,
+                    t.title AS job_title,
+                    COALESCE(NULLIF(t.task_kind, ''), 'SCAN') AS task_kind,
+                    COUNT(DISTINCT COALESCE(NULLIF(t.record_key, ''), CAST(t.id AS TEXT))) AS quantity,
+                    SUM(CASE WHEN t.status='COMPLETED' THEN 1 ELSE 0 END) AS completed_count,
+                    COUNT(DISTINCT t.assignee_id) AS personnel_count
+                FROM project_tasks t
+                WHERE t.project_id=?
+                    AND substr(t.created_at, 1, 10) BETWEEN ? AND ?
+                GROUP BY day, t.title, task_kind
+                ORDER BY day DESC, task_kind, t.title
+                """,
+                (project_id, date_from, date_to),
+            ).fetchall()
+        return [
+            JobQuantityByDay(
+                row["day"],
+                row["job_title"],
+                row["task_kind"],
+                int(row["quantity"] or 0),
+                int(row["completed_count"] or 0),
+                int(row["personnel_count"] or 0),
+            )
+            for row in rows
+        ]
+
+    def personnel_daily_job_details(
+        self, project_id: int, date_from: str, date_to: str
+    ) -> list[PersonnelDailyJobDetail]:
+        with self.db.connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT
+                    substr(t.created_at, 1, 10) AS day,
+                    p.personnel_code,
+                    p.full_name,
+                    t.title AS job_title,
+                    COALESCE(NULLIF(t.task_kind, ''), 'SCAN') AS task_kind,
+                    COUNT(DISTINCT COALESCE(NULLIF(t.record_key, ''), CAST(t.id AS TEXT))) AS quantity,
+                    SUM(CASE WHEN t.status='COMPLETED' THEN 1 ELSE 0 END) AS completed_count,
+                    MIN(t.created_at) AS started_at,
+                    MAX(t.updated_at) AS last_updated_at,
+                    MIN(t.id) AS first_task_id
+                FROM project_tasks t
+                JOIN project_personnel p ON p.id=t.assignee_id
+                WHERE t.project_id=?
+                    AND substr(t.created_at, 1, 10) BETWEEN ? AND ?
+                GROUP BY day, p.id, t.title, task_kind
+                ORDER BY day DESC, p.full_name, started_at, first_task_id
+                """,
+                (project_id, date_from, date_to),
+            ).fetchall()
+        details: list[PersonnelDailyJobDetail] = []
+        sequence_by_person_day: dict[tuple[str, str], int] = {}
+        for row in rows:
+            key = (row["day"], row["personnel_code"])
+            sequence_by_person_day[key] = sequence_by_person_day.get(key, 0) + 1
+            details.append(
+                PersonnelDailyJobDetail(
+                    row["day"],
+                    row["personnel_code"],
+                    row["full_name"],
+                    sequence_by_person_day[key],
+                    row["job_title"],
+                    row["task_kind"],
+                    int(row["quantity"] or 0),
+                    int(row["completed_count"] or 0),
+                    row["started_at"],
+                    row["last_updated_at"],
+                )
+            )
+        return details

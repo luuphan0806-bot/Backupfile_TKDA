@@ -50,3 +50,9 @@ FINAL_OK_STATUSES = {
     STATUS_LOCKED,
     STATUS_ALREADY_EXISTS,
 }
+
+# Single source of truth for "counts as backed up" — used by the SQL
+# backup_summary, scan/check page counting, and mapfile reconcile alike.
+# Includes VERIFIED_SIZE so every consumer agrees with the BACKED_UP
+# semantics of the system mapfile summary.
+COUNTABLE_BACKUP_STATUSES = frozenset(FINAL_OK_STATUSES)

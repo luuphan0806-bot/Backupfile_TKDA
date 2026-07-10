@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import os
 import shutil
 from datetime import datetime
@@ -7,6 +8,7 @@ from pathlib import Path
 
 import flet as ft
 
+from ....constants import COUNTABLE_BACKUP_STATUSES
 from ....models import ProjectTask
 from ... import kit
 from ...date_format import iso_to_display
@@ -37,7 +39,7 @@ RECORD_STATUS_LABELS = {
     "SCANNING": "Đang scan",
     "PENDING_PAPER": "Chờ scan khổ khác",
     "PENDING_CHECK": "Chờ check",
-    "COMPLETED": "Hoàn thành",
+    "COMPLETED": "Hoàn thành (đã check)",
     "RESCAN_REQUIRED": "Cần scan lại",
 }
 BACKUP_STATUS_LABELS = {
@@ -54,13 +56,63 @@ BACKUP_STATUS_COLORS = {
     "CONFLICT": WARNING,
     "ERROR": DANGER,
 }
-COUNTABLE_BACKUP_STATUSES = {
-    "VERIFIED_SIZE",
-    "HASH_PENDING",
-    "VERIFIED_HASH",
-    "LOCKED",
-    "ALREADY_EXISTS",
-}
+def task_code_for(record_parts: list[str], job_code: str) -> str:
+    raw = "_".join([job_code, *record_parts]).upper()
+    clean = "".join(char if char.isalnum() else "_" for char in raw)
+    if len(clean) <= 80:
+        return clean.strip("_") or job_code
+    # Long keys sharing the first 80 chars must not collide on the
+    # (project_id, task_code) upsert — keep a readable prefix plus a
+    # deterministic hash of the full key.
+    digest = hashlib.sha1(raw.encode("utf-8")).hexdigest()[:8].upper()
+    return f"{clean[:71].strip('_')}_{digest}"
+
+
+def check_job_selected(job, selected_value: str | None = None) -> bool:
+    selected = str(selected_value or "")
+    job_kind = str(getattr(job, "job_kind", "") or "").strip().upper()
+    job_code = str(getattr(job, "job_code", "") or "")
+    display_name = str(getattr(job, "display_name", "") or "")
+    haystack = " ".join([selected, job_kind, job_code, display_name]).lower()
+    return job_kind == "CHECK" or selected.strip().upper() == "CHECK" or "check" in haystack
+
+
+def copy_record_backup_files_for_check(db, project_id: int, record_key: str, target_folder: Path) -> int:
+    rows = db.list_backup_files_for_record(
+        project_id,
+        record_key,
+        statuses=COUNTABLE_BACKUP_STATUSES,
+        file_kind="SCAN",
+    )
+    if not rows:
+        raise ValueError("Chưa có dữ liệu backup để copy sang thư mục check.")
+    copied = 0
+    target_folder.mkdir(parents=True, exist_ok=True)
+    for row in rows:
+        source = Path(row["dest_path"])
+        if not source.exists():
+            source = Path(row["source_path"])
+        if not source.exists() or not source.is_file():
+            continue
+        relative_path = str(row["relative_project_path"] or "").replace("\\", "/").strip("/")
+        normalized_key = record_key.replace("\\", "/").strip("/")
+        if relative_path == normalized_key:
+            suffix = source.name
+        elif relative_path.startswith(f"{normalized_key}/"):
+            suffix = relative_path[len(normalized_key) + 1 :]
+        else:
+            suffix = source.name
+        target_path = target_folder / Path(suffix)
+        target_path.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source, target_path)
+        copied += 1
+    if copied == 0:
+        raise ValueError("Không tìm thấy file backup hợp lệ để copy sang thư mục check.")
+    return copied
+
+
+def check_record_is_selected(record_key: str, selected_keys: set[str]) -> bool:
+    return record_key in selected_keys
 
 
 def build(ctx) -> ft.Control:
@@ -246,6 +298,21 @@ def build(ctx) -> ft.Control:
             return
         state["flash"] = (
             f"Đã sao lưu {result['processed']} file cho {record['record_key']} "
+            f"({result['errors']} lỗi, {result['conflicts']} xung đột)."
+        )
+        state["page"] = page_index
+        ctx.refresh()
+
+    def record_check(record: dict) -> None:
+        try:
+            result = ctx.backup.backup_check_record(ctx.project_id, record["record_key"])
+        except (OSError, ValueError) as exc:
+            status_banner.value = f"Không thể ghi nhận check {record['record_key']}: {exc}"
+            status_banner.color = ft.Colors.ERROR
+            ctx.page.update()
+            return
+        state["flash"] = (
+            f"Đã ghi nhận check {result['processed']} file cho {record['record_key']} "
             f"({result['errors']} lỗi, {result['conflicts']} xung đột)."
         )
         state["page"] = page_index
@@ -688,10 +755,20 @@ def build(ctx) -> ft.Control:
             for entry in entries
         ]
 
-    def task_code_for(record_parts: list[str], job_code: str) -> str:
-        raw = "_".join([job_code, *record_parts]).upper()
-        clean = "".join(char if char.isalnum() else "_" for char in raw)
-        return clean[:80].strip("_") or job_code
+    def record_level_label(record_key: str) -> str:
+        parts = [part for part in record_key.replace("\\", "/").split("/") if part]
+        if not directory_levels:
+            return "/".join(parts)
+        labels: list[str] = []
+        for index, part in enumerate(parts):
+            if index < len(directory_levels):
+                labels.append(f"{directory_levels[index].display_name}: {part}")
+            elif labels:
+                labels[-1] = f"{labels[-1]}/{'/'.join(parts[index:])}"
+                break
+            else:
+                labels.append(part)
+        return " | ".join(labels)
 
     def normalize_lookup(value: str) -> str:
         return " ".join(value.strip().lower().split())
@@ -731,18 +808,67 @@ def build(ctx) -> ft.Control:
                 return item
         return None
 
-    def assignment_kind(job_label: str, job_code: str) -> str:
-        text = normalize_lookup(f"{job_code} {job_label}")
-        return "check" if "check" in text else "scan"
+    def assignment_kind(job) -> str:
+        if check_job_selected(job):
+            return "check"
+        return "scan"
 
-    def job_implies_a3(job_label: str, job_code: str) -> bool:
-        return "a3" in normalize_lookup(f"{job_code} {job_label}")
+    def job_mentions_format(job, paper_code: str) -> bool:
+        return paper_code.lower() in normalize_lookup(f"{job.job_code} {job.display_name}")
+
+    # Paper formats needing their own scan pass, minus the base format (lowest
+    # sort_order, A4 in the seeds) which every record is assumed to have.
+    base_format_code = (
+        min(paper_formats, key=lambda item: (item.sort_order, item.code)).code
+        if paper_formats
+        else ""
+    )
+    extra_scan_formats = [
+        item
+        for item in paper_formats
+        if item.requires_separate_scan and item.code != base_format_code
+    ]
+
+    def build_presence_checkboxes(record: dict | None = None) -> dict[str, ft.Checkbox]:
+        checkboxes: dict[str, ft.Checkbox] = {}
+        for paper_format in extra_scan_formats:
+            current = dict(
+                (record or {}).get("paper_statuses", {}).get(paper_format.code) or {}
+            )
+            checkboxes[paper_format.code] = ft.Checkbox(
+                label=f"Hồ sơ có {paper_format.code} cần scan tiếp",
+                value=current.get("scan_status") in {"PENDING_SCAN", "SCANNED", "CHECKED"}
+                or int(current.get("scan_pages", 0) or 0) > 0
+                or int(current.get("scan_files", 0) or 0) > 0,
+            )
+        return checkboxes
+
+    def paper_presence_from(checkboxes: dict[str, ft.Checkbox], job) -> dict[str, bool]:
+        return {
+            code: bool(checkbox.value) or job_mentions_format(job, code)
+            for code, checkbox in checkboxes.items()
+        }
+
+    def backup_completed_previous(completed_previous: list[dict]) -> None:
+        for previous in completed_previous:
+            try:
+                if previous["kind"] == "CHECK":
+                    ctx.backup.backup_check_record(ctx.project_id, previous["record_key"])
+                else:
+                    ctx.backup.backup_record(ctx.project_id, previous["record_key"])
+            except Exception as exc:
+                ctx.db.record_audit(
+                    "ASSIGNMENT_PREVIOUS_BACKUP_ERROR",
+                    str(exc),
+                    project_id=ctx.project_id,
+                )
 
     def copy_backup_files_for_check(record_key: str, target_folder: Path) -> int:
         rows = ctx.db.list_backup_files_for_record(
             ctx.project_id,
             record_key,
             statuses=COUNTABLE_BACKUP_STATUSES,
+            file_kind="SCAN",
         )
         if not rows:
             raise ValueError("Chưa có dữ liệu backup để copy sang thư mục check.")
@@ -811,13 +937,7 @@ def build(ctx) -> ft.Control:
             label="Chốt việc cũ của nhân sự và sao lưu trước khi giao việc mới",
             value=False,
         )
-        a3_current = dict(record.get("paper_statuses", {}).get("A3") or {})
-        a3_presence_checkbox = ft.Checkbox(
-            label="Hồ sơ có A3 cần scan tiếp",
-            value=a3_current.get("scan_status") in {"PENDING_SCAN", "SCANNED", "CHECKED"}
-            or int(a3_current.get("scan_pages", 0) or 0) > 0
-            or int(a3_current.get("scan_files", 0) or 0) > 0,
-        )
+        presence_checkboxes = build_presence_checkboxes(record)
         error_text = ft.Text("", color=DANGER)
 
         def submit(_event=None) -> None:
@@ -840,6 +960,8 @@ def build(ctx) -> ft.Control:
                 return
             work_date_display = datetime.now().strftime("%d/%m/%Y")
             work_date_folder = datetime.now().strftime("%d-%m-%Y")
+            kind = assignment_kind(job)
+            record_key = "/".join(parts)
             try:
                 completed_previous = []
                 if finish_previous_checkbox.value and personnel_id is not None:
@@ -847,15 +969,7 @@ def build(ctx) -> ft.Control:
                         ctx.project_id,
                         personnel_id,
                     )
-                    for previous_key in completed_previous:
-                        try:
-                            ctx.backup.backup_record(ctx.project_id, previous_key)
-                        except Exception as exc:
-                            ctx.db.record_audit(
-                                "ASSIGNMENT_PREVIOUS_BACKUP_ERROR",
-                                str(exc),
-                                project_id=ctx.project_id,
-                            )
+                    backup_completed_previous(completed_previous)
                 target = ctx.mapfiles.create_client_record_folder(
                     ctx.project_id,
                     client_code,
@@ -870,25 +984,31 @@ def build(ctx) -> ft.Control:
                         ctx.project_id,
                         task_code_for(parts, job.job_code),
                         job.display_name,
-                        f"Thư mục hồ sơ: {'/'.join(parts)}\nMáy trạm: {client_code}\nThư mục: {target}",
+                        f"Thư mục hồ sơ: {record_key}\nMáy trạm: {client_code}\nThư mục: {target}",
                         personnel_id,
                         "",
+                        record_key=record_key,
+                        task_kind=kind.upper(),
                     )
                 )
                 ctx.db.save_record_assignment(
                     project_id=ctx.project_id,
-                    record_key="/".join(parts),
+                    record_key=record_key,
                     personnel_id=personnel_id,
                     work_date=work_date_display,
-                    assignment_kind=assignment_kind(job.display_name, job.job_code),
-                    paper_presence={
-                        "A3": bool(a3_presence_checkbox.value)
-                        or job_implies_a3(job.display_name, job.job_code)
-                    },
+                    assignment_kind=kind,
+                    paper_presence=paper_presence_from(presence_checkboxes, job),
                 )
                 copied_for_check = 0
-                if assignment_kind(job.display_name, job.job_code) == "check":
-                    copied_for_check = copy_backup_files_for_check("/".join(parts), target)
+                if kind == "check":
+                    copied_for_check = copy_backup_files_for_check(record_key, target)
+                    ctx.db.save_check_assignment(
+                        project_id=ctx.project_id,
+                        record_key=record_key,
+                        checker_id=personnel_id,
+                        client_code=client_code,
+                        folder_path=str(target),
+                    )
             except ValueError as exc:
                 error_text.value = str(exc)
                 ctx.page.update()
@@ -913,7 +1033,7 @@ def build(ctx) -> ft.Control:
                     ft.Text("/".join(parts), color=TEXT_MUTED),
                     ft.Row([job_dropdown, personnel_dropdown, client_dropdown], wrap=True, spacing=8),
                     finish_previous_checkbox,
-                    a3_presence_checkbox,
+                    *presence_checkboxes.values(),
                     error_text,
                 ],
             ),
@@ -1030,12 +1150,88 @@ def build(ctx) -> ft.Control:
         dialog_ready = {"value": False}
         scan_rows: list[dict] = []
         scan_rows_column = ft.Column(spacing=8, tight=True)
-        check_records = ctx.db.list_check_ready_system_records(ctx.project_id)
-        check_record_boxes = [
-            ft.Checkbox(label=record["record_key"], value=False, data=record)
-            for record in check_records
-        ]
+        check_record_boxes: list[ft.Checkbox] = []
+        check_boxes_column = ft.Column(spacing=2, scroll=ft.ScrollMode.AUTO)
         check_records_panel = ft.Container(visible=False)
+        check_records_loaded = {"value": False}
+        check_status_text = ft.Text(
+            "Nhập bộ lọc nếu cần, rồi bấm Load hồ sơ.",
+            color=TEXT_MUTED,
+            size=12,
+        )
+        check_boxes_column.controls = [
+            ft.Text("Bấm Load hồ sơ để lấy danh sách đã scan xong.", color=TEXT_MUTED)
+        ]
+        check_filter_fields: list[tuple[int, ft.TextField]] = [
+            (
+                index,
+                ft.TextField(
+                    label=f"Lọc {level.display_name}",
+                    dense=True,
+                    width=180,
+                ),
+            )
+            for index, level in enumerate(directory_levels)
+        ]
+
+        def check_part_value(record_key: str, index: int) -> str:
+            parts = [part for part in record_key.replace("\\", "/").split("/") if part]
+            if not parts or index >= len(parts):
+                return ""
+            if index == len(directory_levels) - 1 and len(parts) > len(directory_levels):
+                return "/".join(parts[index:])
+            return parts[index]
+
+        def check_record_passes_filters(record_key: str) -> bool:
+            for index, field in check_filter_fields:
+                needle = str(field.value or "").strip().lower()
+                if not needle:
+                    continue
+                if needle not in check_part_value(record_key, index).lower():
+                    return False
+            return True
+
+        def reload_check_records() -> None:
+            # Requeried on every switch into check mode so the candidate list
+            # reflects data changed while the dialog stayed open.
+            selected_keys = {
+                str((box.data or {}).get("record_key") or "")
+                for box in check_record_boxes
+                if box.value
+            }
+            check_record_boxes.clear()
+            for record in ctx.db.list_check_ready_system_records(ctx.project_id):
+                record_key = str(record["record_key"])
+                if not check_record_passes_filters(record_key):
+                    continue
+                check_record_boxes.append(
+                    ft.Checkbox(
+                        label=record_level_label(record_key),
+                        value=check_record_is_selected(record_key, selected_keys),
+                        data=record,
+                    )
+                )
+            check_records_loaded["value"] = True
+            check_status_text.value = (
+                f"Đã load {len(check_record_boxes)} hồ sơ đủ điều kiện check."
+                if check_record_boxes
+                else "Không có hồ sơ đủ điều kiện check theo bộ lọc hiện tại."
+            )
+            check_boxes_column.controls = (
+                list(check_record_boxes)
+                if check_record_boxes
+                else [
+                    ft.Text(
+                        "Tạm thời chưa có hồ sơ đã hoàn thành scan để check.",
+                        color=TEXT_MUTED,
+                    )
+                ]
+            )
+            if dialog_ready["value"]:
+                ctx.page.update()
+
+        for _index, field in check_filter_fields:
+            field.on_submit = lambda _event: reload_check_records()
 
         def add_scan_row(initial_parts: list[str] | None = None) -> None:
             entries, row_controls = build_record_inputs(initial_parts)
@@ -1111,9 +1307,11 @@ def build(ctx) -> ft.Control:
             label="Chốt việc cũ của nhân sự và sao lưu trước khi giao việc mới",
             value=False,
         )
-        a3_presence_checkbox = ft.Checkbox(
-            label="Hồ sơ có A3 cần scan tiếp",
-            value=False,
+        presence_checkboxes = build_presence_checkboxes()
+        presence_panel = ft.Column(
+            spacing=4,
+            tight=True,
+            controls=list(presence_checkboxes.values()),
         )
         error_text = ft.Text("", color=DANGER)
         scan_rows_panel = ft.Column(
@@ -1134,6 +1332,37 @@ def build(ctx) -> ft.Control:
                 scan_rows_column,
             ],
         )
+        check_filter_panel = ft.Container(
+            padding=12,
+            border_radius=8,
+            border=ft.Border.all(1, ft.Colors.with_opacity(0.16, ft.Colors.PRIMARY)),
+            bgcolor=ft.Colors.with_opacity(0.035, ft.Colors.PRIMARY),
+            content=ft.Column(
+                spacing=8,
+                tight=True,
+                controls=[
+                    ft.Row(
+                        alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
+                        vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                        controls=[
+                            ft.Text("Lọc hồ sơ đã scan xong", color=TEXT_MUTED, size=12),
+                            ft.OutlinedButton(
+                                "Load hồ sơ",
+                                icon=ft.Icons.REFRESH,
+                                on_click=lambda _event: reload_check_records(),
+                            ),
+                        ],
+                    ),
+                    ft.Row(
+                        wrap=True,
+                        spacing=8,
+                        run_spacing=6,
+                        controls=[field for _index, field in check_filter_fields],
+                    ),
+                    check_status_text,
+                ],
+            ),
+        )
         check_records_panel.content = ft.Column(
             spacing=8,
             tight=True,
@@ -1142,55 +1371,65 @@ def build(ctx) -> ft.Control:
                     "Chọn hồ sơ đã hoàn thành scan, đã sao lưu và chưa check.",
                     color=TEXT_MUTED,
                 ),
+                check_filter_panel,
                 ft.Container(
                     height=260,
                     border_radius=8,
                     border=ft.Border.all(1, ft.Colors.with_opacity(0.18, ft.Colors.PRIMARY)),
                     padding=8,
-                    content=ft.Column(
-                        spacing=2,
-                        scroll=ft.ScrollMode.AUTO,
-                        controls=check_record_boxes
-                        if check_record_boxes
-                        else [ft.Text("Tạm thời chưa có hồ sơ đã hoàn thành scan để check.", color=TEXT_MUTED)],
-                    ),
+                    content=check_boxes_column,
                 ),
             ],
         )
 
-        def current_job():
-            return next((item for item in job_types if item.job_code == (job_dropdown.value or "")), None)
+        def current_job(selected_value: str | None = None):
+            selected = str(
+                selected_value if selected_value is not None else (job_dropdown.value or "")
+            )
+            selected_lookup = normalize_lookup(selected)
+            return next(
+                (
+                    item
+                    for item in job_types
+                    if item.job_code == selected
+                    or normalize_lookup(item.display_name) == selected_lookup
+                    or normalize_lookup(item.job_code) == selected_lookup
+                ),
+                None,
+            )
 
-        def current_is_check() -> bool:
-            job = current_job()
-            return bool(job and assignment_kind(job.display_name, job.job_code) == "check")
+        def current_is_check(selected_value: str | None = None) -> bool:
+            job = current_job(selected_value)
+            return check_job_selected(
+                job,
+                selected_value if selected_value is not None else str(job_dropdown.value or ""),
+            )
 
         def refresh_mode(_event=None) -> None:
-            is_check = current_is_check()
+            selected_value = None
+            if _event is not None:
+                selected_value = str(
+                    getattr(getattr(_event, "control", None), "value", "")
+                    or getattr(_event, "data", "")
+                    or ""
+                ) or None
+            is_check = current_is_check(selected_value)
             scan_rows_panel.visible = not is_check
-            a3_presence_checkbox.visible = not is_check
+            presence_panel.visible = not is_check
             check_records_panel.visible = is_check
             if dialog_ready["value"]:
                 ctx.page.update()
 
         job_dropdown.on_change = refresh_mode
 
-        def complete_previous_if_needed(personnel_id: int) -> list[str]:
+        def complete_previous_if_needed(personnel_id: int) -> list[dict]:
             if not finish_previous_checkbox.value:
                 return []
             completed_previous = ctx.db.complete_open_tasks_for_assignee(
                 ctx.project_id,
                 personnel_id,
             )
-            for previous_key in completed_previous:
-                try:
-                    ctx.backup.backup_record(ctx.project_id, previous_key)
-                except Exception as exc:
-                    ctx.db.record_audit(
-                        "ASSIGNMENT_PREVIOUS_BACKUP_ERROR",
-                        str(exc),
-                        project_id=ctx.project_id,
-                    )
+            backup_completed_previous(completed_previous)
             return completed_previous
 
         def submit(_submit_event=None) -> None:
@@ -1215,7 +1454,10 @@ def build(ctx) -> ft.Control:
             targets: list[Path] = []
             try:
                 completed_previous = complete_previous_if_needed(personnel_id)
-                if assignment_kind(job.display_name, job.job_code) == "check":
+                if assignment_kind(job) == "check":
+                    refresh_mode()
+                    if not check_records_loaded["value"]:
+                        raise ValueError("Bấm Load hồ sơ để lấy danh sách hồ sơ đã scan xong trước khi tạo việc check.")
                     if not check_record_boxes:
                         raise ValueError("Tạm thời chưa có hồ sơ đã hoàn thành scan để check.")
                     selected_records = [box.data for box in check_record_boxes if box.value]
@@ -1223,6 +1465,7 @@ def build(ctx) -> ft.Control:
                         raise ValueError("Cần chọn ít nhất 1 hồ sơ để tạo việc check.")
                     for record in selected_records:
                         parts = [part for part in record["record_key"].replace("\\", "/").split("/") if part]
+                        record_key = "/".join(parts)
                         target = ctx.mapfiles.create_client_record_folder(
                             ctx.project_id,
                             client.client_code,
@@ -1237,19 +1480,28 @@ def build(ctx) -> ft.Control:
                                 ctx.project_id,
                                 task_code_for(parts, job.job_code),
                                 job.display_name,
-                                f"Thư mục hồ sơ: {'/'.join(parts)}\nMáy trạm: {client.client_code}\nThư mục: {target}",
+                                f"Thư mục hồ sơ: {record_key}\nMáy trạm: {client.client_code}\nThư mục: {target}",
                                 int(person.id),
                                 "",
+                                record_key=record_key,
+                                task_kind="CHECK",
                             )
                         )
                         ctx.db.save_record_assignment(
                             project_id=ctx.project_id,
-                            record_key="/".join(parts),
+                            record_key=record_key,
                             personnel_id=int(person.id),
                             work_date=work_date_display,
                             assignment_kind="check",
                         )
-                        copied_for_check += copy_backup_files_for_check("/".join(parts), target)
+                        copied_for_check += copy_backup_files_for_check(record_key, target)
+                        ctx.db.save_check_assignment(
+                            project_id=ctx.project_id,
+                            record_key=record_key,
+                            checker_id=int(person.id),
+                            client_code=client.client_code,
+                            folder_path=str(target),
+                        )
                         targets.append(target)
                         created += 1
                 else:
@@ -1264,14 +1516,14 @@ def build(ctx) -> ft.Control:
                         seen_keys.add(record_key)
                     for row_item in scan_rows:
                         parts = record_parts_from_inputs(row_item["entries"])
+                        record_key = "/".join(parts)
                         row_id = ctx.mapfiles.add_manual_record(
                             ctx.project_id,
                             parts,
-                            client_code=client.client_code,
-                            workstation_owner=person.full_name,
-                            workstation_date=work_date_folder,
-                            workstation_task=job.display_name,
                         )
+                        # The workstation folder is created once here; passing
+                        # client kwargs to add_manual_record would create it a
+                        # second time over the UNC share.
                         target = ctx.mapfiles.create_client_record_folder(
                             ctx.project_id,
                             client.client_code,
@@ -1286,21 +1538,20 @@ def build(ctx) -> ft.Control:
                                 ctx.project_id,
                                 task_code_for(parts, job.job_code),
                                 job.display_name,
-                                f"Thư mục hồ sơ: {'/'.join(parts)}\nMáy trạm: {client.client_code}\nDòng mapfile: {row_id}\nThư mục: {target}",
+                                f"Thư mục hồ sơ: {record_key}\nMáy trạm: {client.client_code}\nDòng mapfile: {row_id}\nThư mục: {target}",
                                 int(person.id),
                                 "",
+                                record_key=record_key,
+                                task_kind="SCAN",
                             )
                         )
                         ctx.db.save_record_assignment(
                             project_id=ctx.project_id,
-                            record_key="/".join(parts),
+                            record_key=record_key,
                             personnel_id=int(person.id),
                             work_date=work_date_display,
                             assignment_kind="scan",
-                            paper_presence={
-                                "A3": bool(a3_presence_checkbox.value)
-                                or job_implies_a3(job.display_name, job.job_code)
-                            },
+                            paper_presence=paper_presence_from(presence_checkboxes, job),
                         )
                         targets.append(target)
                         created += 1
@@ -1334,7 +1585,7 @@ def build(ctx) -> ft.Control:
                     ),
                     ft.Row([job_dropdown, personnel_dropdown, client_dropdown], wrap=True, spacing=8),
                     finish_previous_checkbox,
-                    a3_presence_checkbox,
+                    presence_panel,
                     scan_rows_panel,
                     check_records_panel,
                     error_text,
@@ -1627,6 +1878,13 @@ def build(ctx) -> ft.Control:
                                 icon=ft.Icons.BACKUP_OUTLINED,
                                 tooltip="Sao luu ho so",
                                 on_click=lambda _e, current=record: backup_record(
+                                    current
+                                ),
+                            ),
+                            ft.IconButton(
+                                icon=ft.Icons.FACT_CHECK_OUTLINED,
+                                tooltip="Ghi nhận check",
+                                on_click=lambda _e, current=record: record_check(
                                     current
                                 ),
                             ),

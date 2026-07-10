@@ -6,12 +6,14 @@ import json
 import secrets
 import shutil
 import sqlite3
+import unicodedata
 from contextlib import closing, contextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Iterable
 
 from .constants import (
+    COUNTABLE_BACKUP_STATUSES,
     DEFAULT_POLL_INTERVAL_SECONDS,
     DEFAULT_STABILITY_WAIT_SECONDS,
     FINAL_OK_STATUSES,
@@ -29,7 +31,7 @@ from .models import (
 )
 
 
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 DEFAULT_ADMIN_PASSWORD = "Admin@123"
 PBKDF2_ITERATIONS = 600_000
 
@@ -55,6 +57,9 @@ RECORD_WORKFLOW_STATUSES = {
     "RESCAN_REQUIRED",
 }
 MANUAL_RECORD_STATUSES = {"COMPLETED", "RESCAN_REQUIRED"}
+# SQL fragment kept in sync with constants.COUNTABLE_BACKUP_STATUSES (values are
+# trusted module constants, safe to inline).
+_COUNTABLE_SQL = ", ".join(f"'{status}'" for status in sorted(COUNTABLE_BACKUP_STATUSES))
 
 
 def utc_now() -> str:
@@ -84,6 +89,24 @@ def record_key_from_expected_path(expected_path: str) -> str:
     parent = record_key_from_relative_path(expected_path)
     parts = parent.split("/")
     return "/".join(parts[1:]) if len(parts) > 1 else parent
+
+
+def _strip_diacritics(value: str) -> str:
+    decomposed = unicodedata.normalize("NFD", value)
+    return "".join(char for char in decomposed if not unicodedata.combining(char))
+
+
+def record_key_from_task_description(description: str) -> str:
+    """Legacy fallback: extract the record key from the human-readable task
+    description ("Thư mục hồ sơ: <key>"). New tasks carry record_key as a
+    dedicated column; this parse only serves rows created before schema v6."""
+    for line in str(description or "").splitlines():
+        if ":" not in line:
+            continue
+        label, value = line.split(":", 1)
+        if "thu muc ho so" in _strip_diacritics(label.lower()):
+            return value.strip().replace("\\", "/").strip("/")
+    return ""
 
 
 def _password_hash(password: str, salt: bytes) -> str:
@@ -159,6 +182,7 @@ class Database:
                 self._migrate_v2_to_v3(conn)
             # Idempotent so partially upgraded databases can repair themselves.
             self._migrate_to_v5(conn)
+            self._migrate_to_v6(conn, current_version)
             conn.execute(
                 """
                 CREATE INDEX IF NOT EXISTS idx_backup_project_record
@@ -285,6 +309,9 @@ class Database:
                     CHECK(priority IN ('LOW', 'NORMAL', 'HIGH', 'URGENT')),
                 status TEXT NOT NULL DEFAULT 'NEW'
                     CHECK(status IN ('NEW', 'IN_PROGRESS', 'COMPLETED', 'CANCELLED')),
+                record_key TEXT NOT NULL DEFAULT '',
+                task_kind TEXT NOT NULL DEFAULT ''
+                    CHECK(task_kind IN ('', 'SCAN', 'CHECK')),
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL,
                 FOREIGN KEY(project_id) REFERENCES projects(id) ON DELETE CASCADE,
@@ -312,6 +339,8 @@ class Database:
                 project_id INTEGER NOT NULL,
                 job_code TEXT NOT NULL,
                 display_name TEXT NOT NULL,
+                job_kind TEXT NOT NULL DEFAULT 'SCAN'
+                    CHECK(job_kind IN ('SCAN', 'CHECK')),
                 enabled INTEGER NOT NULL DEFAULT 1,
                 sort_order INTEGER NOT NULL DEFAULT 0,
                 created_at TEXT NOT NULL,
@@ -358,6 +387,23 @@ class Database:
                 UNIQUE(record_id, paper_format_id)
             );
 
+            CREATE TABLE IF NOT EXISTS record_check_assignments(
+                id INTEGER PRIMARY KEY,
+                project_id INTEGER NOT NULL,
+                record_key TEXT NOT NULL,
+                checker_id INTEGER NOT NULL,
+                client_code TEXT NOT NULL,
+                folder_path TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'ASSIGNED'
+                    CHECK(status IN ('ASSIGNED', 'RECORDED', 'CANCELLED')),
+                assigned_at TEXT NOT NULL,
+                recorded_at TEXT,
+                updated_at TEXT NOT NULL,
+                FOREIGN KEY(project_id) REFERENCES projects(id) ON DELETE CASCADE,
+                FOREIGN KEY(checker_id) REFERENCES project_personnel(id),
+                UNIQUE(project_id, record_key, folder_path)
+            );
+
             CREATE TABLE IF NOT EXISTS settings(
                 key TEXT PRIMARY KEY,
                 value TEXT NOT NULL
@@ -371,6 +417,8 @@ class Database:
                 project_code TEXT NOT NULL,
                 relative_project_path TEXT NOT NULL,
                 record_key TEXT NOT NULL DEFAULT '',
+                file_kind TEXT NOT NULL DEFAULT 'SCAN'
+                    CHECK(file_kind IN ('SCAN', 'CHECK')),
                 dest_path TEXT NOT NULL,
                 file_size INTEGER,
                 source_mtime TEXT,
@@ -725,7 +773,142 @@ class Database:
             """
         )
         self._seed_paper_formats(conn)
+
+    def _migrate_to_v6(self, conn: sqlite3.Connection, current_version: int | None) -> None:
+        job_type_columns = {
+            row[1] for row in conn.execute("PRAGMA table_info(project_job_types)").fetchall()
+        }
+        job_kind_added = "job_kind" not in job_type_columns
+        if job_kind_added:
+            conn.execute(
+                """
+                ALTER TABLE project_job_types ADD COLUMN job_kind TEXT NOT NULL DEFAULT 'SCAN'
+                    CHECK(job_kind IN ('SCAN', 'CHECK'))
+                """
+            )
+            # One-time default: infer the kind from the name the way the UI
+            # heuristic used to, so existing check jobs stay check jobs.
+            conn.execute(
+                """
+                UPDATE project_job_types SET job_kind='CHECK'
+                WHERE instr(lower(job_code || ' ' || display_name), 'check') > 0
+                """
+            )
+
+        task_columns = {
+            row[1] for row in conn.execute("PRAGMA table_info(project_tasks)").fetchall()
+        }
+        if "record_key" not in task_columns:
+            conn.execute(
+                "ALTER TABLE project_tasks ADD COLUMN record_key TEXT NOT NULL DEFAULT ''"
+            )
+        if "task_kind" not in task_columns:
+            conn.execute(
+                """
+                ALTER TABLE project_tasks ADD COLUMN task_kind TEXT NOT NULL DEFAULT ''
+                    CHECK(task_kind IN ('', 'SCAN', 'CHECK'))
+                """
+            )
+        for row in conn.execute(
+            "SELECT id, title, description FROM project_tasks WHERE record_key=''"
+        ).fetchall():
+            record_key = record_key_from_task_description(row["description"])
+            if not record_key:
+                continue
+            task_kind = "CHECK" if "check" in str(row["title"] or "").lower() else "SCAN"
+            conn.execute(
+                "UPDATE project_tasks SET record_key=?, task_kind=? WHERE id=?",
+                (record_key, task_kind, row["id"]),
+            )
+
+        backup_columns = {
+            row[1] for row in conn.execute("PRAGMA table_info(backup_files)").fetchall()
+        }
+        if "file_kind" not in backup_columns:
+            conn.execute(
+                """
+                ALTER TABLE backup_files ADD COLUMN file_kind TEXT NOT NULL DEFAULT 'SCAN'
+                    CHECK(file_kind IN ('SCAN', 'CHECK'))
+                """
+            )
+
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS record_check_assignments(
+                id INTEGER PRIMARY KEY,
+                project_id INTEGER NOT NULL,
+                record_key TEXT NOT NULL,
+                checker_id INTEGER NOT NULL,
+                client_code TEXT NOT NULL,
+                folder_path TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'ASSIGNED'
+                    CHECK(status IN ('ASSIGNED', 'RECORDED', 'CANCELLED')),
+                assigned_at TEXT NOT NULL,
+                recorded_at TEXT,
+                updated_at TEXT NOT NULL,
+                FOREIGN KEY(project_id) REFERENCES projects(id) ON DELETE CASCADE,
+                FOREIGN KEY(checker_id) REFERENCES project_personnel(id),
+                UNIQUE(project_id, record_key, folder_path)
+            )
+            """
+        )
+
+        if current_version is not None and current_version < 6:
+            self._migrate_v6_record_statuses(conn)
+
+        # Seeding needs job_kind to exist, so it happens here rather than in v5.
         self._seed_job_types(conn)
+
+    @staticmethod
+    def _migrate_v6_record_statuses(conn: sqlite3.Connection) -> None:
+        """One-time repair for records force-completed by the old "chốt việc"
+        shortcut: COMPLETED without any check data means scanning was closed
+        out, not that the record was checked. Move them back to the state the
+        new lifecycle expects so they surface in the check-assignment list."""
+        rows = conn.execute(
+            """
+            SELECT rw.id, rw.scanner_id,
+                EXISTS(
+                    SELECT 1 FROM record_paper_statuses rps
+                    WHERE rps.record_id=rw.id AND (rps.scan_pages>0 OR rps.scan_files>0)
+                ) AS has_scan_data,
+                EXISTS(
+                    SELECT 1 FROM record_paper_statuses rps
+                    WHERE rps.record_id=rw.id AND rps.scan_status='PENDING_SCAN'
+                ) AS has_pending_paper
+            FROM record_workflows rw
+            WHERE rw.record_status='COMPLETED'
+                AND rw.checker_id IS NULL
+                AND COALESCE(rw.check_date, '')=''
+                AND COALESCE(rw.check_pages, 0)=0
+                AND COALESCE(rw.check_files, 0)=0
+            """
+        ).fetchall()
+        if not rows:
+            return
+        now = utc_now()
+        moved: dict[str, int] = {}
+        for row in rows:
+            if row["has_scan_data"]:
+                new_status = "PENDING_PAPER" if row["has_pending_paper"] else "PENDING_CHECK"
+            else:
+                new_status = "SCANNING" if row["scanner_id"] is not None else "NOT_STARTED"
+            conn.execute(
+                "UPDATE record_workflows SET record_status=?, updated_at=? WHERE id=?",
+                (new_status, now, row["id"]),
+            )
+            moved[new_status] = moved.get(new_status, 0) + 1
+        summary = ", ".join(f"{status}: {count}" for status, count in sorted(moved.items()))
+        conn.execute(
+            """
+            INSERT INTO audit_logs(project_id, action, message, created_at)
+            VALUES(NULL, 'MIGRATION_V6_RECORD_STATUS', ?, ?)
+            """,
+            (
+                f"Reverted {len(rows)} force-completed record(s) without check data ({summary})",
+                now,
+            ),
+        )
 
     @staticmethod
     def _seed_paper_formats(
@@ -766,21 +949,21 @@ class Database:
             project_ids = [project_id]
         now = utc_now()
         for current_project_id in project_ids:
-            for code, name, order in (
-                ("SCAN_A4", "Scan A4", 10),
-                ("SCAN_A3", "Scan A3 (mới)", 20),
-                ("SCAN_A3_OLD", "Scan A3 (cũ)", 30),
-                ("SCAN_A0", "Scan A0", 40),
-                ("CHECK", "Check Scan", 50),
+            for code, name, order, kind in (
+                ("SCAN_A4", "Scan A4", 10, "SCAN"),
+                ("SCAN_A3", "Scan A3 (mới)", 20, "SCAN"),
+                ("SCAN_A3_OLD", "Scan A3 (cũ)", 30, "SCAN"),
+                ("SCAN_A0", "Scan A0", 40, "SCAN"),
+                ("CHECK", "Check Scan", 50, "CHECK"),
             ):
                 conn.execute(
                     """
                     INSERT OR IGNORE INTO project_job_types(
-                        project_id, job_code, display_name, enabled,
+                        project_id, job_code, display_name, job_kind, enabled,
                         sort_order, created_at, updated_at
-                    ) VALUES(?, ?, ?, 1, ?, ?, ?)
+                    ) VALUES(?, ?, ?, ?, 1, ?, ?, ?)
                     """,
-                    (current_project_id, code, name, order, now, now),
+                    (current_project_id, code, name, kind, order, now, now),
                 )
             conn.execute(
                 """
@@ -1313,6 +1496,7 @@ class Database:
                 row["display_name"],
                 bool(row["enabled"]),
                 int(row["sort_order"]),
+                str(row["job_kind"] or "SCAN"),
             )
             for row in rows
         ]
@@ -1320,20 +1504,24 @@ class Database:
     def save_job_type(self, job_type: JobType) -> int:
         code = job_type.job_code.strip().upper()
         display_name = job_type.display_name.strip()
+        job_kind = (job_type.job_kind or "SCAN").strip().upper()
         if not code or any(char in code for char in r'\/:*?"<>|'):
             raise ValueError("Mã công việc không hợp lệ.")
         if not display_name:
             raise ValueError("Cần nhập tên công việc.")
+        if job_kind not in {"SCAN", "CHECK"}:
+            raise ValueError("Loại công việc phải là SCAN hoặc CHECK.")
         now = utc_now()
         with self.connect() as conn:
             conn.execute(
                 """
                 INSERT INTO project_job_types(
-                    project_id, job_code, display_name, enabled,
+                    project_id, job_code, display_name, job_kind, enabled,
                     sort_order, created_at, updated_at
-                ) VALUES(?, ?, ?, ?, ?, ?, ?)
+                ) VALUES(?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(project_id, job_code) DO UPDATE SET
                     display_name=excluded.display_name,
+                    job_kind=excluded.job_kind,
                     enabled=excluded.enabled,
                     sort_order=excluded.sort_order,
                     updated_at=excluded.updated_at
@@ -1342,6 +1530,7 @@ class Database:
                     job_type.project_id,
                     code,
                     display_name,
+                    job_kind,
                     int(job_type.enabled),
                     max(0, int(job_type.sort_order)),
                     now,
@@ -1378,22 +1567,27 @@ class Database:
             if not assignee or not assignee["enabled"]:
                 raise ValueError("Tasks can only be assigned to active personnel")
             now = utc_now()
+            record_key = task.record_key.strip().replace("\\", "/").strip("/")
+            task_kind = (task.task_kind or "").strip().upper()
+            if task_kind not in {"", "SCAN", "CHECK"}:
+                raise ValueError("Loại nhiệm vụ phải là SCAN hoặc CHECK.")
             conn.execute(
                 """
                 INSERT INTO project_tasks(
                     project_id, task_code, title, description, assignee_id, due_date,
-                    priority, status, created_at, updated_at
-                ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    priority, status, record_key, task_kind, created_at, updated_at
+                ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(project_id, task_code) DO UPDATE SET
                     title=excluded.title, description=excluded.description,
                     assignee_id=excluded.assignee_id, due_date=excluded.due_date,
                     priority=excluded.priority, status=excluded.status,
+                    record_key=excluded.record_key, task_kind=excluded.task_kind,
                     updated_at=excluded.updated_at
                 """,
                 (
                     task.project_id, task.task_code.strip().upper(), task.title.strip(),
                     task.description.strip(), task.assignee_id, task.due_date.strip(),
-                    task.priority, task.status, now, now,
+                    task.priority, task.status, record_key, task_kind, now, now,
                 ),
             )
             row = conn.execute(
@@ -1408,12 +1602,16 @@ class Database:
 
     def complete_open_tasks_for_assignee(
         self, project_id: int, assignee_id: int
-    ) -> list[str]:
-        """Mark a person's open tasks complete and return affected record keys."""
+    ) -> list[dict[str, Any]]:
+        """Mark a person's open tasks complete and return the affected records
+        as ``{"task_id", "record_key", "kind"}`` dicts (kind: SCAN/CHECK/'').
+
+        Closing a task no longer mutates record_workflows directly — the caller
+        drives the follow-up backup, whose automated sync owns the status."""
         with self.connect() as conn:
             rows = conn.execute(
                 """
-                SELECT id, description FROM project_tasks
+                SELECT id, title, description, record_key, task_kind FROM project_tasks
                 WHERE project_id=? AND assignee_id=? AND status IN ('NEW', 'IN_PROGRESS')
                 """,
                 (project_id, assignee_id),
@@ -1430,36 +1628,22 @@ class Database:
                 """,
                 [now, *task_ids],
             )
-            record_keys: list[str] = []
+            completed: list[dict[str, Any]] = []
+            seen_keys: set[str] = set()
             for row in rows:
-                for line in str(row["description"] or "").splitlines():
-                    if ":" not in line:
-                        continue
-                    label, value = line.split(":", 1)
-                    normalized = (
-                        label.lower()
-                        .replace("ư", "u")
-                        .replace("ơ", "o")
-                        .replace("ồ", "o")
-                        .replace("ô", "o")
-                        .replace("ê", "e")
-                        .replace("á", "a")
-                    )
-                    if "thu muc ho so" in normalized:
-                        record_key = value.strip().replace("\\", "/").strip("/")
-                        if record_key and record_key not in record_keys:
-                            record_keys.append(record_key)
-                        break
-            for record_key in record_keys:
-                conn.execute(
-                    """
-                    UPDATE record_workflows
-                    SET record_status='COMPLETED', updated_at=?
-                    WHERE project_id=? AND record_key=?
-                    """,
-                    (now, project_id, record_key),
+                record_key = str(row["record_key"] or "").strip()
+                if not record_key:
+                    record_key = record_key_from_task_description(row["description"])
+                if not record_key or record_key in seen_keys:
+                    continue
+                seen_keys.add(record_key)
+                kind = str(row["task_kind"] or "").strip().upper()
+                if not kind:
+                    kind = "CHECK" if "check" in str(row["title"] or "").lower() else "SCAN"
+                completed.append(
+                    {"task_id": int(row["id"]), "record_key": record_key, "kind": kind}
                 )
-            return record_keys
+            return completed
 
     # ------------------------------------------------------------------
     # Audit and backup records
@@ -1532,7 +1716,10 @@ class Database:
         status: str,
         error_message: str = "",
         hash_sha256: str | None = None,
+        file_kind: str = "SCAN",
     ) -> int:
+        if file_kind not in {"SCAN", "CHECK"}:
+            raise ValueError("file_kind phải là SCAN hoặc CHECK.")
         now = utc_now()
         record_key = record_key_from_relative_path(relative_project_path)
         with self.connect() as conn:
@@ -1540,13 +1727,14 @@ class Database:
                 """
                 INSERT INTO backup_files(
                     project_id, client_code, source_path, project_code,
-                    relative_project_path, record_key, dest_path, file_size, source_mtime,
-                    hash_sha256, status, error_message, created_at
-                ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    relative_project_path, record_key, file_kind, dest_path, file_size,
+                    source_mtime, hash_sha256, status, error_message, created_at
+                ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(project_id, client_code, source_path) DO UPDATE SET
                     project_code=excluded.project_code,
                     relative_project_path=excluded.relative_project_path,
                     record_key=excluded.record_key,
+                    file_kind=excluded.file_kind,
                     dest_path=excluded.dest_path, file_size=excluded.file_size,
                     source_mtime=excluded.source_mtime,
                     hash_sha256=COALESCE(excluded.hash_sha256, backup_files.hash_sha256),
@@ -1554,8 +1742,8 @@ class Database:
                 """,
                 (
                     project_id, client_code, source_path, project_code,
-                    relative_project_path, record_key, dest_path, file_size, source_mtime,
-                    hash_sha256, status, error_message, now,
+                    relative_project_path, record_key, file_kind, dest_path, file_size,
+                    source_mtime, hash_sha256, status, error_message, now,
                 ),
             )
             row = conn.execute(
@@ -1625,15 +1813,16 @@ class Database:
     ) -> sqlite3.Row | None:
         """Look up an already-backed-up file for 1 mapfile row without loading the
         whole backup_files table (used by MapfileService.reconcile_row)."""
+        status_list = sorted(COUNTABLE_BACKUP_STATUSES)
         with self.connect() as conn:
             return conn.execute(
-                """
+                f"""
                 SELECT * FROM backup_files
                 WHERE project_id=? AND (project_code || '/' || relative_project_path)=?
-                    AND status IN ('HASH_PENDING', 'VERIFIED_HASH', 'LOCKED', 'ALREADY_EXISTS')
+                    AND status IN ({', '.join('?' for _ in status_list)})
                 ORDER BY id DESC LIMIT 1
                 """,
-                (project_id, relative_path.replace("\\", "/")),
+                (project_id, relative_path.replace("\\", "/"), *status_list),
             ).fetchone()
 
     def list_backup_files(
@@ -1660,6 +1849,7 @@ class Database:
         project_id: int,
         record_key: str,
         statuses: Iterable[str] | None = None,
+        file_kind: str | None = None,
     ) -> list[sqlite3.Row]:
         params: list[Any] = [project_id, record_key.strip().replace("\\", "/").strip("/")]
         sql = "SELECT * FROM backup_files WHERE project_id=? AND record_key=?"
@@ -1667,6 +1857,9 @@ class Database:
             status_list = list(statuses)
             sql += f" AND status IN ({', '.join('?' for _ in status_list)})"
             params.extend(status_list)
+        if file_kind is not None:
+            sql += " AND file_kind=?"
+            params.append(file_kind)
         sql += " ORDER BY id DESC"
         with self.connect() as conn:
             return conn.execute(sql, params).fetchall()
@@ -1678,6 +1871,7 @@ class Database:
             project_id,
             record_key,
             statuses=FINAL_OK_STATUSES,
+            file_kind="SCAN",
         )
         for row in rows:
             for path_key in ("dest_path", "source_path"):
@@ -1770,7 +1964,7 @@ class Database:
             where.append("('/' || rk.record_key || '/') LIKE :%s" % key)
             params[key] = f"%/{value}%"
         clause = " AND ".join(where)
-        cte = """
+        cte = f"""
             WITH latest_import AS (
                 SELECT id FROM mapfile_imports
                 WHERE project_id=:project_id
@@ -1809,8 +2003,7 @@ class Database:
                         WHEN SUM(CASE WHEN status='CONFLICT' THEN 1 ELSE 0 END) > 0
                             THEN 'CONFLICT'
                         WHEN SUM(CASE WHEN status NOT IN (
-                            'VERIFIED_SIZE', 'HASH_PENDING', 'VERIFIED_HASH',
-                            'LOCKED', 'ALREADY_EXISTS'
+                            {_COUNTABLE_SQL}
                         ) THEN 1 ELSE 0 END) > 0
                             THEN 'IN_PROGRESS'
                         ELSE 'BACKED_UP'
@@ -1927,17 +2120,20 @@ class Database:
             project_id,
             limit=limit,
             offset=0,
-            filters={"record_status": "COMPLETED"},
         )
         for row in rows:
             record_key = str(row.get("record_key") or "")
             if not record_key or record_key in seen:
                 continue
+            record_status = str(row.get("record_status") or "NOT_STARTED")
             paper_statuses = row.get("paper_statuses") or {}
             has_scan_data = any(
                 int(paper.get("scan_pages", 0) or 0) > 0
                 or int(paper.get("scan_files", 0) or 0) > 0
                 for paper in paper_statuses.values()
+            )
+            has_existing_scan_backup = self.has_existing_backup_file_for_record(
+                project_id, record_key
             )
             has_check_data = (
                 row.get("checker_id") is not None
@@ -1945,11 +2141,20 @@ class Database:
                 or int(row.get("check_pages", 0) or 0) > 0
                 or int(row.get("check_files", 0) or 0) > 0
             )
+            is_legacy_backup_only = (
+                row.get("workflow_id") is None and has_existing_scan_backup
+            )
+            is_ready_status = (
+                record_status == "PENDING_CHECK"
+                or (record_status == "COMPLETED" and not has_check_data)
+                or is_legacy_backup_only
+            )
             if (
-                has_scan_data
+                is_ready_status
+                and (has_scan_data or has_existing_scan_backup)
                 and not has_check_data
                 and row.get("backup_status") == "BACKED_UP"
-                and self.has_existing_backup_file_for_record(project_id, record_key)
+                and has_existing_scan_backup
             ):
                 records.append(row)
                 seen.add(record_key)
@@ -2116,12 +2321,13 @@ class Database:
             if workflow is None:
                 scanner_id = personnel_id if assignment_kind == "scan" else None
                 checker_id = personnel_id if assignment_kind == "check" else None
+                initial_status = "SCANNING" if assignment_kind == "scan" else "NOT_STARTED"
                 conn.execute(
                     """
                     INSERT INTO record_workflows(
                         project_id, record_key, scanner_id, scan_date, checker_id,
                         check_date, check_pages, check_files, record_status, notes, created_at, updated_at
-                    ) VALUES(?, ?, ?, ?, ?, ?, 0, 0, 'NOT_STARTED', '', ?, ?)
+                    ) VALUES(?, ?, ?, ?, ?, ?, 0, 0, ?, '', ?, ?)
                     """,
                     (
                         project_id,
@@ -2130,6 +2336,7 @@ class Database:
                         "",
                         checker_id,
                         "",
+                        initial_status,
                         now,
                         now,
                     ),
@@ -2144,10 +2351,18 @@ class Database:
                     (personnel_id, now, workflow["id"]),
                 )
             else:
+                # A fresh scan assignment starts the record (and re-opens a
+                # RESCAN_REQUIRED pin so the automated sync can progress again),
+                # but never downgrades records already past scanning.
                 conn.execute(
                     """
                     UPDATE record_workflows
-                    SET scanner_id=?, updated_at=?
+                    SET scanner_id=?,
+                        record_status=CASE
+                            WHEN record_status IN ('NOT_STARTED', 'RESCAN_REQUIRED')
+                            THEN 'SCANNING' ELSE record_status
+                        END,
+                        updated_at=?
                     WHERE id=?
                     """,
                     (personnel_id, now, workflow["id"]),
@@ -2199,6 +2414,140 @@ class Database:
                         ),
                     )
             return workflow_id
+
+    # ------------------------------------------------------------------
+    # Check assignments (thư mục check của người check trên máy trạm)
+    # ------------------------------------------------------------------
+    def save_check_assignment(
+        self,
+        *,
+        project_id: int,
+        record_key: str,
+        checker_id: int,
+        client_code: str,
+        folder_path: str,
+    ) -> int:
+        record_key = record_key.strip().replace("\\", "/").strip("/")
+        folder_path = str(Path(folder_path))
+        if not record_key or not folder_path:
+            raise ValueError("Cần mã hồ sơ và thư mục check.")
+        now = utc_now()
+        with self.connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO record_check_assignments(
+                    project_id, record_key, checker_id, client_code, folder_path,
+                    status, assigned_at, recorded_at, updated_at
+                ) VALUES(?, ?, ?, ?, ?, 'ASSIGNED', ?, NULL, ?)
+                ON CONFLICT(project_id, record_key, folder_path) DO UPDATE SET
+                    checker_id=excluded.checker_id,
+                    client_code=excluded.client_code,
+                    status='ASSIGNED',
+                    assigned_at=excluded.assigned_at,
+                    recorded_at=NULL,
+                    updated_at=excluded.updated_at
+                """,
+                (project_id, record_key, checker_id, client_code, folder_path, now, now),
+            )
+            row = conn.execute(
+                """
+                SELECT id FROM record_check_assignments
+                WHERE project_id=? AND record_key=? AND folder_path=?
+                """,
+                (project_id, record_key, folder_path),
+            ).fetchone()
+            return int(row["id"])
+
+    def list_check_assignments(
+        self,
+        project_id: int,
+        *,
+        record_key: str | None = None,
+        statuses: Iterable[str] = ("ASSIGNED", "RECORDED"),
+    ) -> list[sqlite3.Row]:
+        status_list = list(statuses)
+        sql = "SELECT * FROM record_check_assignments WHERE project_id=?"
+        params: list[Any] = [project_id]
+        if status_list:
+            sql += f" AND status IN ({', '.join('?' for _ in status_list)})"
+            params.extend(status_list)
+        if record_key is not None:
+            sql += " AND record_key=?"
+            params.append(record_key.strip().replace("\\", "/").strip("/"))
+        sql += " ORDER BY id DESC"
+        with self.connect() as conn:
+            return conn.execute(sql, params).fetchall()
+
+    def mark_check_assignment_recorded(self, assignment_id: int) -> None:
+        now = utc_now()
+        with self.connect() as conn:
+            conn.execute(
+                """
+                UPDATE record_check_assignments
+                SET status='RECORDED', recorded_at=?, updated_at=?
+                WHERE id=?
+                """,
+                (now, now, assignment_id),
+            )
+
+    def save_automated_check_counts(
+        self,
+        *,
+        project_id: int,
+        record_key: str,
+        pages: int,
+        files: int,
+        checker_id: int | None = None,
+    ) -> None:
+        """Record the checker's output counted from their backed-up check
+        folder, and close the record (PENDING_CHECK → COMPLETED) once real
+        check data exists. A manual RESCAN_REQUIRED pin always wins."""
+        record_key = record_key.strip().replace("\\", "/").strip("/")
+        if not record_key:
+            raise ValueError("Không xác định được mã hồ sơ.")
+        now = utc_now()
+        check_date = datetime.now().strftime("%Y-%m-%d")
+        with self.connect() as conn:
+            workflow = conn.execute(
+                """
+                SELECT id, record_status FROM record_workflows
+                WHERE project_id=? AND record_key=?
+                """,
+                (project_id, record_key),
+            ).fetchone()
+            if workflow is None:
+                return
+            conn.execute(
+                """
+                UPDATE record_workflows
+                SET check_pages=?, check_files=?,
+                    check_date=COALESCE(NULLIF(check_date, ''), ?),
+                    checker_id=COALESCE(checker_id, ?),
+                    updated_at=?
+                WHERE id=?
+                """,
+                (max(0, int(pages)), max(0, int(files)), check_date, checker_id, now, workflow["id"]),
+            )
+            if (pages > 0 or files > 0) and workflow["record_status"] != "RESCAN_REQUIRED":
+                conn.execute(
+                    """
+                    UPDATE record_workflows
+                    SET record_status='COMPLETED', updated_at=?
+                    WHERE id=?
+                    """,
+                    (now, workflow["id"]),
+                )
+            conn.execute(
+                """
+                INSERT INTO audit_logs(project_id, action, message, created_at)
+                VALUES(?, 'RECORD_CHECK_RECORDED', ?, ?)
+                """,
+                (
+                    project_id,
+                    f"Recorded check counts for {record_key}: {pages} page(s), {files} file(s)",
+                    now,
+                ),
+            )
 
     def save_record_workflow(
         self,
@@ -2891,6 +3240,22 @@ class Database:
                     """,
                     (new_record_key, project_id, old_record_key),
                 )
+                conn.execute(
+                    """
+                    UPDATE record_check_assignments
+                    SET record_key=?, updated_at=?
+                    WHERE project_id=? AND record_key=?
+                    """,
+                    (new_record_key, utc_now(), project_id, old_record_key),
+                )
+                conn.execute(
+                    """
+                    UPDATE project_tasks
+                    SET record_key=?, updated_at=?
+                    WHERE project_id=? AND record_key=?
+                    """,
+                    (new_record_key, utc_now(), project_id, old_record_key),
+                )
 
     def delete_system_record(self, project_id: int, record_key: str) -> int:
         record_key = record_key.strip().replace("\\", "/").strip("/")
@@ -2960,10 +3325,19 @@ class Database:
                 deleted_rows += len(backup_ids)
             conn.execute(
                 """
-                DELETE FROM project_tasks
-                WHERE project_id=? AND description LIKE ?
+                DELETE FROM record_check_assignments
+                WHERE project_id=? AND record_key=?
                 """,
-                (project_id, f"%{record_key}%"),
+                (project_id, record_key),
+            )
+            conn.execute(
+                """
+                DELETE FROM project_tasks
+                WHERE project_id=? AND (
+                    record_key=? OR (record_key='' AND description LIKE ?)
+                )
+                """,
+                (project_id, record_key, f"%{record_key}%"),
             )
             conn.execute(
                 """
