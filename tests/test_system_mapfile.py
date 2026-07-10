@@ -406,3 +406,88 @@ def test_system_mapfile_keeps_new_manual_rows_at_bottom(tmp_path: Path) -> None:
         "2026/HS/999",
         "2026/HS/001",
     ]
+
+
+def test_check_assignment_lists_completed_scans_waiting_for_check(tmp_path: Path) -> None:
+    db = Database(tmp_path / "app.sqlite3")
+    project_id = _create_project(db, tmp_path)
+    service = MapfileService(db)
+    scanner_id = db.save_personnel(
+        Personnel(None, project_id, "NV01", "Người Scan", "Scanner")
+    )
+    checker_id = db.save_personnel(
+        Personnel(None, project_id, "NV02", "Người Check", "Checker")
+    )
+    formats = {item.code: item for item in db.list_paper_formats(project_id)}
+
+    service.add_manual_record(project_id, ["2026", "HS", "READY"])
+    db.save_record_workflow(
+        project_id=project_id,
+        record_key="2026/HS/READY",
+        scanner_id=scanner_id,
+        scan_date="10/07/2026",
+        checker_id=None,
+        check_date="",
+        check_pages=0,
+        check_files=0,
+        record_status="COMPLETED",
+        notes="",
+        paper_statuses=[
+            {
+                "paper_format_id": formats["A4"].id,
+                "scanner_id": scanner_id,
+                "scan_date": "10/07/2026",
+                "scan_status": "SCANNED",
+                "scan_pages": 12,
+                "scan_files": 1,
+                "check_pages": 0,
+                "notes": "",
+            }
+        ],
+    )
+    _add_file(
+        db,
+        project_id,
+        client="SCAN01",
+        name="READY.pdf",
+        status="HASH_PENDING",
+        hash_sha256="c" * 64,
+    )
+
+    service.add_manual_record(project_id, ["2026", "HS", "CHECKED"])
+    db.save_record_workflow(
+        project_id=project_id,
+        record_key="2026/HS/CHECKED",
+        scanner_id=scanner_id,
+        scan_date="10/07/2026",
+        checker_id=checker_id,
+        check_date="10/07/2026",
+        check_pages=5,
+        check_files=1,
+        record_status="COMPLETED",
+        notes="",
+        paper_statuses=[
+            {
+                "paper_format_id": formats["A4"].id,
+                "scanner_id": scanner_id,
+                "scan_date": "10/07/2026",
+                "scan_status": "SCANNED",
+                "scan_pages": 5,
+                "scan_files": 1,
+                "check_pages": 0,
+                "notes": "",
+            }
+        ],
+    )
+    _add_file(
+        db,
+        project_id,
+        client="SCAN01",
+        name="CHECKED.pdf",
+        status="HASH_PENDING",
+        hash_sha256="d" * 64,
+    )
+
+    ready_records = db.list_check_ready_system_records(project_id)
+
+    assert [record["record_key"] for record in ready_records] == ["2026/HS/READY"]

@@ -1899,6 +1899,43 @@ class Database:
                 )
             return result, total
 
+    def list_check_ready_system_records(
+        self, project_id: int, *, limit: int = 5000
+    ) -> list[dict[str, Any]]:
+        records: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        for status in ("PENDING_CHECK", "COMPLETED"):
+            rows, _total = self.list_system_records_page(
+                project_id,
+                limit=limit,
+                offset=0,
+                filters={"record_status": status},
+            )
+            for row in rows:
+                record_key = str(row.get("record_key") or "")
+                if not record_key or record_key in seen:
+                    continue
+                paper_statuses = row.get("paper_statuses") or {}
+                has_scan_data = any(
+                    int(paper.get("scan_pages", 0) or 0) > 0
+                    or int(paper.get("scan_files", 0) or 0) > 0
+                    for paper in paper_statuses.values()
+                )
+                has_check_data = (
+                    row.get("checker_id") is not None
+                    or bool(str(row.get("check_date") or "").strip())
+                    or int(row.get("check_pages", 0) or 0) > 0
+                    or int(row.get("check_files", 0) or 0) > 0
+                )
+                if (
+                    has_scan_data
+                    and not has_check_data
+                    and row.get("backup_status") == "BACKED_UP"
+                ):
+                    records.append(row)
+                    seen.add(record_key)
+        return records[:limit]
+
     def get_system_records_summary(
         self,
         project_id: int,

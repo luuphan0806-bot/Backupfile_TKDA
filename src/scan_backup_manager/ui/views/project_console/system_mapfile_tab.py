@@ -1013,12 +1013,7 @@ def build(ctx) -> ft.Control:
         dialog_ready = {"value": False}
         scan_rows: list[dict] = []
         scan_rows_column = ft.Column(spacing=8, tight=True)
-        check_records, _check_total = ctx.db.list_system_records_page(
-            ctx.project_id,
-            limit=5000,
-            offset=0,
-            filters={"record_status": "PENDING_CHECK"},
-        )
+        check_records = ctx.db.list_check_ready_system_records(ctx.project_id)
         check_record_boxes = [
             ft.Checkbox(label=record["record_key"], value=False, data=record)
             for record in check_records
@@ -1127,7 +1122,7 @@ def build(ctx) -> ft.Control:
             tight=True,
             controls=[
                 ft.Text(
-                    "Chọn hồ sơ đã scan xong và đang chờ check.",
+                    "Chọn hồ sơ đã hoàn thành scan, đã sao lưu và chưa check.",
                     color=TEXT_MUTED,
                 ),
                 ft.Container(
@@ -1140,7 +1135,7 @@ def build(ctx) -> ft.Control:
                         scroll=ft.ScrollMode.AUTO,
                         controls=check_record_boxes
                         if check_record_boxes
-                        else [ft.Text("Tạm thời chưa có hồ sơ để check.", color=TEXT_MUTED)],
+                        else [ft.Text("Tạm thời chưa có hồ sơ đã hoàn thành scan để check.", color=TEXT_MUTED)],
                     ),
                 ),
             ],
@@ -1205,7 +1200,7 @@ def build(ctx) -> ft.Control:
                 completed_previous = complete_previous_if_needed(personnel_id)
                 if assignment_kind(job.display_name, job.job_code) == "check":
                     if not check_record_boxes:
-                        raise ValueError("Tạm thời chưa có hồ sơ để check.")
+                        raise ValueError("Tạm thời chưa có hồ sơ đã hoàn thành scan để check.")
                     selected_records = [box.data for box in check_record_boxes if box.value]
                     if not selected_records:
                         raise ValueError("Cần chọn ít nhất 1 hồ sơ để tạo việc check.")
