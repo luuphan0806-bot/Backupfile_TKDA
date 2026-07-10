@@ -402,7 +402,7 @@ def build(ctx) -> ft.Control:
         "record_status": 4,
         "backup_status": 3,
         "client_codes": 3,
-        "actions": 4,
+        "actions": 5,
     }
     for level in mapfile_levels:
         default_column_weights[f"level_{level.position}"] = 2
@@ -423,7 +423,7 @@ def build(ctx) -> ft.Control:
         "record_status": 170,
         "backup_status": 150,
         "client_codes": 150,
-        "actions": 176,
+        "actions": 216,
         "check": 250,
     }
     for level in mapfile_levels:
@@ -881,6 +881,59 @@ def build(ctx) -> ft.Control:
             ],
             icon=ft.Icons.EDIT_OUTLINED,
             width=860,
+        )
+        ctx.page.show_dialog(dialog)
+
+    def open_delete_record_dialog(record: dict) -> None:
+        password_field = ft.TextField(
+            label="Mat khau admin",
+            password=True,
+            can_reveal_password=True,
+            width=320,
+        )
+        error_text = ft.Text("", color=DANGER)
+
+        def submit(_event=None) -> None:
+            if not ctx.db.verify_admin_password(password_field.value or ""):
+                error_text.value = "Mat khau admin khong dung."
+                ctx.page.update()
+                return
+            try:
+                deleted = ctx.db.delete_system_record(
+                    ctx.project_id,
+                    record["record_key"],
+                )
+            except ValueError as exc:
+                error_text.value = str(exc)
+                ctx.page.update()
+                return
+            ctx.page.pop_dialog()
+            state["flash"] = f"Da xoa dong mapfile {record['record_key']} ({deleted} ban ghi du lieu)."
+            ctx.refresh()
+
+        dialog = kit.dialog(
+            f"Xoa dong mapfile {record['record_key']}",
+            ft.Column(
+                spacing=12,
+                tight=True,
+                controls=[
+                    ft.Text(
+                        "Canh bao: thao tac nay se xoa thong tin mapfile, trang thai ho so, "
+                        "du lieu scan/backup trong he thong cua dong nay. File vat ly tren o dia "
+                        "khong bi xoa.",
+                        color=DANGER,
+                        weight=ft.FontWeight.W_600,
+                    ),
+                    password_field,
+                    error_text,
+                ],
+            ),
+            [
+                kit.ghost_button("Huy", on_click=lambda _e: ctx.page.pop_dialog()),
+                kit.primary_button("Xoa dong", icon=ft.Icons.DELETE_OUTLINE, on_click=submit),
+            ],
+            icon=ft.Icons.WARNING_AMBER_ROUNDED,
+            width=760,
         )
         ctx.page.show_dialog(dialog)
 
@@ -1345,6 +1398,14 @@ def build(ctx) -> ft.Control:
                                 tooltip="Mở thư mục hồ sơ",
                                 disabled=not bool(record["sample_dest_path"]),
                                 on_click=lambda _e, current=record: open_folder(
+                                    current
+                                ),
+                            ),
+                            ft.IconButton(
+                                icon=ft.Icons.DELETE_OUTLINE,
+                                tooltip="Xoa dong mapfile",
+                                icon_color=DANGER,
+                                on_click=lambda _e, current=record: open_delete_record_dialog(
                                     current
                                 ),
                             ),

@@ -2826,6 +2826,88 @@ class Database:
                     (new_record_key, project_id, old_record_key),
                 )
 
+    def delete_system_record(self, project_id: int, record_key: str) -> int:
+        record_key = record_key.strip().replace("\\", "/").strip("/")
+        if not record_key:
+            raise ValueError("Record key is required")
+        now = utc_now()
+        with self.connect() as conn:
+            latest_import = conn.execute(
+                """
+                SELECT id FROM mapfile_imports
+                WHERE project_id=? ORDER BY id DESC LIMIT 1
+                """,
+                (project_id,),
+            ).fetchone()
+            deleted_rows = 0
+            if latest_import is not None:
+                cur = conn.execute(
+                    """
+                    DELETE FROM mapfile_rows
+                    WHERE import_id=? AND record_key=?
+                    """,
+                    (int(latest_import["id"]), record_key),
+                )
+                deleted_rows += int(cur.rowcount or 0)
+                conn.execute(
+                    """
+                    UPDATE mapfile_imports
+                    SET row_count=(
+                        SELECT COUNT(*) FROM mapfile_rows WHERE import_id=?
+                    )
+                    WHERE id=?
+                    """,
+                    (int(latest_import["id"]), int(latest_import["id"])),
+                )
+            workflow = conn.execute(
+                """
+                SELECT id FROM record_workflows
+                WHERE project_id=? AND record_key=?
+                """,
+                (project_id, record_key),
+            ).fetchone()
+            if workflow is not None:
+                conn.execute("DELETE FROM record_workflows WHERE id=?", (workflow["id"],))
+                deleted_rows += 1
+            backup_rows = conn.execute(
+                """
+                SELECT id FROM backup_files
+                WHERE project_id=? AND record_key=?
+                """,
+                (project_id, record_key),
+            ).fetchall()
+            if backup_rows:
+                backup_ids = [int(row["id"]) for row in backup_rows]
+                placeholders = ", ".join("?" for _ in backup_ids)
+                conn.execute(
+                    f"DELETE FROM conflicts WHERE backup_file_id IN ({placeholders})",
+                    backup_ids,
+                )
+                conn.execute(
+                    f"DELETE FROM backup_file_paper_sizes WHERE backup_file_id IN ({placeholders})",
+                    backup_ids,
+                )
+                conn.execute(
+                    f"DELETE FROM backup_files WHERE id IN ({placeholders})",
+                    backup_ids,
+                )
+                deleted_rows += len(backup_ids)
+            conn.execute(
+                """
+                DELETE FROM project_tasks
+                WHERE project_id=? AND description LIKE ?
+                """,
+                (project_id, f"%{record_key}%"),
+            )
+            conn.execute(
+                """
+                INSERT INTO audit_logs(project_id, action, message, created_at)
+                VALUES(?, 'SYSTEM_RECORD_DELETED', ?, ?)
+                """,
+                (project_id, f"Deleted system mapfile record {record_key}", now),
+            )
+            return deleted_rows
+
     def mark_mapfile_row_done(
         self, row_id: int, personnel_id: int | None, *, done_at: str | None = None
     ) -> None:
