@@ -234,6 +234,7 @@ class Database:
                 allowed_values_json TEXT NOT NULL DEFAULT '[]',
                 show_in_mapfile INTEGER NOT NULL DEFAULT 1,
                 mapfile_position INTEGER NOT NULL DEFAULT 0,
+                require_catalog_selection INTEGER NOT NULL DEFAULT 0,
                 FOREIGN KEY(project_id) REFERENCES projects(id) ON DELETE CASCADE,
                 UNIQUE(project_id, position)
             );
@@ -694,6 +695,8 @@ class Database:
             conn.execute("ALTER TABLE project_directory_levels ADD COLUMN show_in_mapfile INTEGER NOT NULL DEFAULT 1")
         if "mapfile_position" not in level_columns:
             conn.execute("ALTER TABLE project_directory_levels ADD COLUMN mapfile_position INTEGER NOT NULL DEFAULT 0")
+        if "require_catalog_selection" not in level_columns:
+            conn.execute("ALTER TABLE project_directory_levels ADD COLUMN require_catalog_selection INTEGER NOT NULL DEFAULT 0")
         conn.execute(
             """
             UPDATE project_directory_levels
@@ -1071,6 +1074,7 @@ class Database:
                 row["validation_type"], json.loads(row["allowed_values_json"]),
                 bool(row["show_in_mapfile"]),
                 int(row["mapfile_position"] or row["position"]),
+                bool(row["require_catalog_selection"]),
             )
             for row in rows
         ]
@@ -1094,18 +1098,24 @@ class Database:
                     key = clean_value.upper() if level.validation_type == "ENUM" else clean_value
                     allowed_by_key.setdefault(key, clean_value)
                 allowed = sorted(allowed_by_key.values())
+                if level.require_catalog_selection and not allowed:
+                    raise ValueError(
+                        f"{display_name} bắt buộc chọn từ danh mục nhưng chưa có giá trị."
+                    )
                 conn.execute(
                     """
                     INSERT INTO project_directory_levels(
                         project_id, position, display_name, validation_type,
-                        allowed_values_json, show_in_mapfile, mapfile_position
-                    ) VALUES(?, ?, ?, ?, ?, ?, ?)
+                        allowed_values_json, show_in_mapfile, mapfile_position,
+                        require_catalog_selection
+                    ) VALUES(?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         project_id, position, display_name, level.validation_type,
                         json.dumps(allowed, ensure_ascii=False),
                         int(level.show_in_mapfile),
                         int(level.mapfile_position or position),
+                        int(level.require_catalog_selection),
                     ),
                 )
 

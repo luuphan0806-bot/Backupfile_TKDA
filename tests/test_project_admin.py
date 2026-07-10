@@ -135,6 +135,34 @@ def test_directory_levels_store_mapfile_display_settings(tmp_path: Path) -> None
     assert levels[1].mapfile_position == 1
 
 
+def test_directory_levels_store_catalog_requirement(tmp_path: Path) -> None:
+    db = Database(tmp_path / "app.sqlite3")
+    project = configure_project(db, tmp_path)
+    db.save_directory_levels(
+        project.id or 0,
+        [
+            DirectoryLevel(None, project.id or 0, 1, "Loại hồ sơ", "ENUM", ["DOC"], True, 1, True),
+        ],
+    )
+
+    levels = db.list_directory_levels(project.id or 0)
+
+    assert levels[0].require_catalog_selection is True
+
+
+def test_required_catalog_level_needs_values(tmp_path: Path) -> None:
+    db = Database(tmp_path / "app.sqlite3")
+    project = configure_project(db, tmp_path)
+
+    with pytest.raises(ValueError, match="bắt buộc chọn từ danh mục"):
+        db.save_directory_levels(
+            project.id or 0,
+            [
+                DirectoryLevel(None, project.id or 0, 1, "Loại hồ sơ", "ENUM", [], True, 1, True),
+            ],
+        )
+
+
 def test_enum_directory_level_can_start_without_catalog_values(tmp_path: Path) -> None:
     db = Database(tmp_path / "app.sqlite3")
     project = configure_project(db, tmp_path)

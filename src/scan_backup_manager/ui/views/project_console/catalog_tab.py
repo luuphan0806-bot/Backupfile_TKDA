@@ -58,6 +58,7 @@ def build(ctx) -> ft.Control:
         allowed_values: list[str] | None = None,
         show_in_mapfile: bool | None = None,
         mapfile_position: int | None = None,
+        require_catalog_selection: bool | None = None,
     ) -> DirectoryLevel:
         return DirectoryLevel(
             level.id,
@@ -68,6 +69,11 @@ def build(ctx) -> ft.Control:
             list(level.allowed_values if allowed_values is None else allowed_values),
             level.show_in_mapfile if show_in_mapfile is None else show_in_mapfile,
             level.mapfile_position if mapfile_position is None else mapfile_position,
+            (
+                level.require_catalog_selection
+                if require_catalog_selection is None
+                else require_catalog_selection
+            ),
         )
 
     def normalize_mapfile_positions(next_levels: list[DirectoryLevel]) -> list[DirectoryLevel]:
@@ -121,6 +127,14 @@ def build(ctx) -> ft.Control:
         next_levels = list(levels)
         next_levels[level_index] = clone_level(next_levels[level_index], show_in_mapfile=value)
         save_levels(normalize_mapfile_positions(next_levels))
+
+    def update_catalog_requirement(level_index: int, value: bool) -> None:
+        next_levels = list(levels)
+        next_levels[level_index] = clone_level(
+            next_levels[level_index],
+            require_catalog_selection=value,
+        )
+        save_levels(next_levels)
 
     def move_mapfile_level(level_index: int, delta: int) -> None:
         ordered_indices = sorted(
@@ -199,6 +213,13 @@ def build(ctx) -> ft.Control:
                                 size=11,
                                 color=TEXT_MUTED,
                             ),
+                            ft.Text(
+                                "Bắt buộc chọn danh mục"
+                                if level.require_catalog_selection
+                                else "Cho phép nhập tự do",
+                                size=11,
+                                color=TEXT_MUTED,
+                            ),
                         ],
                     ),
                     ft.Row(
@@ -209,6 +230,14 @@ def build(ctx) -> ft.Control:
                                 value=level.show_in_mapfile,
                                 tooltip="Hiển thị cấp này trong Mapfile hệ thống",
                                 on_change=lambda event, i=index: update_mapfile_visibility(
+                                    i,
+                                    bool(event.control.value),
+                                ),
+                            ),
+                            ft.Checkbox(
+                                value=level.require_catalog_selection,
+                                tooltip="Bắt buộc tạo hồ sơ từ danh sách danh mục",
+                                on_change=lambda event, i=index: update_catalog_requirement(
                                     i,
                                     bool(event.control.value),
                                 ),
@@ -262,6 +291,14 @@ def build(ctx) -> ft.Control:
                                     label="Hiển thị trong Mapfile hệ thống",
                                     value=selected_level.show_in_mapfile,
                                     on_change=lambda event: update_mapfile_visibility(
+                                        selected_index,
+                                        bool(event.control.value),
+                                    ),
+                                ),
+                                ft.Checkbox(
+                                    label="Bắt buộc chọn từ danh mục khi tạo việc",
+                                    value=selected_level.require_catalog_selection,
+                                    on_change=lambda event: update_catalog_requirement(
                                         selected_index,
                                         bool(event.control.value),
                                     ),

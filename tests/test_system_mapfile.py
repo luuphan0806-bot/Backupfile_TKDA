@@ -5,7 +5,7 @@ from scan_backup_manager.db import Database
 import pytest
 
 from scan_backup_manager.mapfile import MapfileService
-from scan_backup_manager.models import Client, PaperFormat, Personnel, Project
+from scan_backup_manager.models import Client, DirectoryLevel, PaperFormat, Personnel, Project
 
 
 def _create_project(db: Database, tmp_path: Path) -> int:
@@ -205,6 +205,24 @@ def test_system_mapfile_can_add_manual_record(tmp_path: Path) -> None:
     assert total == 1
     assert records[0]["record_key"] == "2026/HS/002"
     assert records[0]["backup_status"] == "NOT_BACKED_UP"
+
+
+def test_system_mapfile_requires_catalog_value_when_configured(tmp_path: Path) -> None:
+    db = Database(tmp_path / "app.sqlite3")
+    project_id = _create_project(db, tmp_path)
+    db.save_directory_levels(
+        project_id,
+        [
+            DirectoryLevel(None, project_id, 1, "Năm", "YEAR4", ["2026"]),
+            DirectoryLevel(None, project_id, 2, "Loại hồ sơ", "ENUM", ["HD"], True, 2, True),
+            DirectoryLevel(None, project_id, 3, "Mã hồ sơ", "TEXT", []),
+        ],
+    )
+    service = MapfileService(db)
+
+    service.add_manual_record(project_id, ["2026", "HD", "001"])
+    with pytest.raises(ValueError, match="phải chọn từ danh mục"):
+        service.add_manual_record(project_id, ["2026", "DOC", "002"])
 
 
 def test_system_mapfile_can_edit_manual_record_key(tmp_path: Path) -> None:

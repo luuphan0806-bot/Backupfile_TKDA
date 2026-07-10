@@ -602,6 +602,86 @@ def build(ctx) -> ft.Control:
             ]
         return [("record_key", "Mã hồ sơ")]
 
+    def build_record_inputs(initial_parts: list[str] | None = None) -> tuple[list[dict], ft.Row]:
+        parts = initial_parts or []
+        entries: list[dict] = []
+        controls: list[ft.Control] = []
+        if directory_levels:
+            for index, level in enumerate(directory_levels):
+                if index == len(directory_levels) - 1 and len(parts) > len(directory_levels):
+                    initial = "/".join(parts[index:])
+                else:
+                    initial = parts[index] if index < len(parts) else ""
+                allowed = list(level.allowed_values)
+                if allowed and level.require_catalog_selection:
+                    dropdown = ft.Dropdown(
+                        label=level.display_name,
+                        dense=True,
+                        width=220,
+                        value=initial if initial in allowed else None,
+                        options=[
+                            ft.dropdown.Option(key=value, text=value)
+                            for value in allowed
+                        ],
+                    )
+                    entries.append({"control": dropdown})
+                    controls.append(dropdown)
+                elif allowed:
+                    text_field = ft.TextField(
+                        label=level.display_name,
+                        value=initial,
+                        dense=True,
+                        width=220,
+                    )
+                    dropdown = ft.Dropdown(
+                        label=f"Chọn {level.display_name}",
+                        dense=True,
+                        width=220,
+                        options=[
+                            ft.dropdown.Option(key=value, text=value)
+                            for value in allowed
+                        ],
+                    )
+                    dropdown.on_change = (
+                        lambda event, field=text_field: (
+                            setattr(field, "value", event.control.value or ""),
+                            ctx.page.update(),
+                        )
+                    )
+                    entries.append({"control": text_field})
+                    controls.append(ft.Column(spacing=4, tight=True, controls=[dropdown, text_field]))
+                else:
+                    text_field = ft.TextField(
+                        label=level.display_name,
+                        value=initial,
+                        dense=True,
+                        width=220,
+                    )
+                    entries.append({"control": text_field})
+                    controls.append(text_field)
+        else:
+            text_field = ft.TextField(
+                label="Mã hồ sơ",
+                value="/".join(parts),
+                dense=True,
+                width=320,
+            )
+            entries.append({"control": text_field, "record_key": True})
+            controls.append(text_field)
+        return entries, ft.Row(controls=controls, wrap=True, spacing=8)
+
+    def record_parts_from_inputs(entries: list[dict]) -> list[str]:
+        if entries and entries[0].get("record_key"):
+            return [
+                part
+                for part in str(entries[0]["control"].value or "").replace("\\", "/").split("/")
+                if part.strip()
+            ]
+        return [
+            str(entry["control"].value or "").strip()
+            for entry in entries
+        ]
+
     def task_code_for(record_parts: list[str], job_code: str) -> str:
         raw = "_".join([job_code, *record_parts]).upper()
         clean = "".join(char if char.isalnum() else "_" for char in raw)
@@ -833,19 +913,11 @@ def build(ctx) -> ft.Control:
         current_parts = [
             part for part in record["record_key"].replace("\\", "/").split("/") if part
         ]
-        record_fields = []
-        for index, (_key, label) in enumerate(new_record_keys()):
-            if index == len(new_record_keys()) - 1 and len(current_parts) > len(new_record_keys()):
-                value = "/".join(current_parts[index:])
-            else:
-                value = current_parts[index] if index < len(current_parts) else ""
-            record_fields.append(
-                ft.TextField(label=label, value=value, dense=True, width=220)
-            )
+        record_inputs, record_inputs_row = build_record_inputs(current_parts)
         error_text = ft.Text("", color=DANGER)
 
         def submit(_event=None) -> None:
-            new_parts = [(field.value or "").strip() for field in record_fields]
+            new_parts = record_parts_from_inputs(record_inputs)
             if not new_parts or any(not part for part in new_parts):
                 error_text.value = "Can nhap du thong tin ho so."
                 ctx.page.update()
@@ -871,7 +943,7 @@ def build(ctx) -> ft.Control:
                 tight=True,
                 scroll=ft.ScrollMode.AUTO,
                 controls=[
-                    ft.Row(record_fields, wrap=True, spacing=8),
+                    record_inputs_row,
                     error_text,
                 ],
             ),
@@ -938,10 +1010,7 @@ def build(ctx) -> ft.Control:
         ctx.page.show_dialog(dialog)
 
     def open_create_job_dialog(_event=None) -> None:
-        record_fields = [
-            (key, label, ft.TextField(label=label, dense=True, width=220))
-            for key, label in new_record_keys()
-        ]
+        record_inputs, record_inputs_row = build_record_inputs()
         job_dropdown = ft.Dropdown(
             label="Cong viec",
             dense=True,
@@ -986,7 +1055,7 @@ def build(ctx) -> ft.Control:
         error_text = ft.Text("", color=DANGER)
 
         def submit(_submit_event=None) -> None:
-            parts = [(field.value or "").strip() for _key, _label, field in record_fields]
+            parts = record_parts_from_inputs(record_inputs)
             job_code = job_dropdown.value or ""
             personnel_id = int(personnel_dropdown.value) if personnel_dropdown.value else None
             client_code = client_dropdown.value or ""
@@ -1091,7 +1160,7 @@ def build(ctx) -> ft.Control:
                         "Moi lan giao viec tao dung 1 dong mapfile cho 1 nhan su va 1 cong viec.",
                         color=TEXT_MUTED,
                     ),
-                    ft.Row([field for _key, _label, field in record_fields], wrap=True, spacing=8),
+                    record_inputs_row,
                     ft.Row([job_dropdown, personnel_dropdown, client_dropdown], wrap=True, spacing=8),
                     finish_previous_checkbox,
                     a3_presence_checkbox,

@@ -30,6 +30,7 @@ class DirectoryLevel:
     allowed_values: list[str]
     show_in_mapfile: bool = True
     mapfile_position: int = 0
+    require_catalog_selection: bool = False
 
 
 @dataclass(slots=True)

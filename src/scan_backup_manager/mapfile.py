@@ -9,7 +9,7 @@ from openpyxl import load_workbook
 
 from .db import Database
 from .filesystem import find_project_roots, workstation_project_root_name
-from .models import MapfileProfile
+from .models import DirectoryLevel, MapfileProfile
 
 
 def normalize_cell(value: Any) -> str:
@@ -222,6 +222,7 @@ class MapfileService:
 
         profile = self.db.get_mapfile_profile(project_id)
         directory_levels = self.db.list_directory_levels(project_id)
+        self._validate_catalog_required_parts(directory_levels, clean_parts)
         raw: dict[str, Any] = {
             profile.project_column: project.project_code,
             profile.file_name_column: normalize_cell(file_name),
@@ -282,6 +283,7 @@ class MapfileService:
             raise ValueError("Cần nhập đầy đủ thông tin hồ sơ.")
         profile = self.db.get_mapfile_profile(project_id)
         directory_levels = self.db.list_directory_levels(project_id)
+        self._validate_catalog_required_parts(directory_levels, clean_parts)
         raw: dict[str, Any] = {
             profile.project_column: project.project_code,
             profile.file_name_column: normalize_cell(file_name),
@@ -314,6 +316,27 @@ class MapfileService:
             project_id=project_id,
         )
         return new_record_key
+
+    @staticmethod
+    def _validate_catalog_required_parts(
+        directory_levels: list[DirectoryLevel],
+        record_parts: list[str],
+    ) -> None:
+        for index, level in enumerate(directory_levels):
+            if not level.require_catalog_selection:
+                continue
+            if index >= len(record_parts):
+                raise ValueError(f"Cần chọn {level.display_name} từ danh mục.")
+            allowed = {
+                value.upper() if level.validation_type == "ENUM" else value
+                for value in level.allowed_values
+            }
+            value = record_parts[index]
+            key = value.upper() if level.validation_type == "ENUM" else value
+            if key not in allowed:
+                raise ValueError(
+                    f"{level.display_name} phải chọn từ danh mục đã cấu hình."
+                )
 
     def create_client_record_folder(
         self,
