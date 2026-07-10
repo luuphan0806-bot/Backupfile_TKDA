@@ -116,6 +116,7 @@ def test_backup_counts_pdf_pages_by_paper_size(tmp_path: Path) -> None:
 
     records, total = db.list_system_records_page(project_id)
     assert total == 1
+    assert records[0]["record_status"] == "PENDING_CHECK"
     statuses = records[0]["paper_statuses"]
     assert statuses["A4"]["scan_pages"] == 2
     assert statuses["A4"]["scan_files"] == 1
@@ -138,9 +139,35 @@ def test_backup_recomputes_pdf_counts_without_double_counting(tmp_path: Path) ->
     manager.run_all_enabled(project_id)
 
     records, _total = db.list_system_records_page(project_id)
+    assert records[0]["record_status"] == "PENDING_PAPER"
     assert records[0]["paper_statuses"]["A4"]["scan_pages"] == 1
     assert records[0]["paper_statuses"]["A4"]["scan_files"] == 1
     assert records[0]["paper_statuses"]["A3"]["scan_date"] == ""
+
+
+def test_backup_does_not_overwrite_admin_completed_status(tmp_path: Path) -> None:
+    db, project_id = make_db(tmp_path)
+    make_source_pdf(tmp_path, "1.pdf", [(210, 297)])
+    db.save_client(Client(None, project_id, "SCAN01", "Staff", str(tmp_path / "share"), True))
+    db.save_record_workflow(
+        project_id=project_id,
+        record_key="2023/HS/123",
+        scanner_id=None,
+        scan_date="",
+        checker_id=None,
+        check_date="",
+        check_pages=0,
+        check_files=0,
+        record_status="COMPLETED",
+        notes="",
+        paper_statuses=[],
+    )
+
+    BackupManager(db).run_all_enabled(project_id)
+
+    records, _total = db.list_system_records_page(project_id)
+    assert records[0]["record_status"] == "COMPLETED"
+    assert records[0]["paper_statuses"]["A4"]["scan_pages"] == 1
 
 
 def test_backup_record_only_processes_matching_record(tmp_path: Path) -> None:

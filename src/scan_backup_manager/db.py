@@ -50,6 +50,7 @@ RECORD_WORKFLOW_STATUSES = {
     "COMPLETED",
     "RESCAN_REQUIRED",
 }
+MANUAL_RECORD_STATUSES = {"COMPLETED", "RESCAN_REQUIRED"}
 
 
 def utc_now() -> str:
@@ -2326,9 +2327,48 @@ class Database:
                 ).fetchone()["id"]
             )
             formats = conn.execute(
-                "SELECT id, code FROM paper_formats WHERE project_id=? AND enabled=1",
+                """
+                SELECT id, code, requires_separate_scan
+                FROM paper_formats
+                WHERE project_id=? AND enabled=1
+                """,
                 (project_id,),
             ).fetchall()
+            scanned_codes = {
+                code
+                for code, counts in paper_counts.items()
+                if int(counts.get("pages", 0) or 0) > 0
+                or int(counts.get("files", 0) or 0) > 0
+            }
+            has_scan_data = bool(scanned_codes)
+            required_codes = {
+                row["code"]
+                for row in formats
+                if int(row["requires_separate_scan"] or 0) == 1
+            }
+            missing_required_codes = required_codes - scanned_codes
+            workflow_row = conn.execute(
+                """
+                SELECT record_status FROM record_workflows
+                WHERE id=?
+                """,
+                (workflow_id,),
+            ).fetchone()
+            current_record_status = (
+                workflow_row["record_status"] if workflow_row else "NOT_STARTED"
+            )
+            if has_scan_data and current_record_status not in MANUAL_RECORD_STATUSES:
+                next_record_status = (
+                    "PENDING_PAPER" if missing_required_codes else "PENDING_CHECK"
+                )
+                conn.execute(
+                    """
+                    UPDATE record_workflows
+                    SET record_status=?, updated_at=?
+                    WHERE id=?
+                    """,
+                    (next_record_status, now, workflow_id),
+                )
             for paper_format in formats:
                 code = paper_format["code"]
                 counts = paper_counts.get(code, {})
