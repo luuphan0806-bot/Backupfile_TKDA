@@ -332,3 +332,19 @@ def test_system_mapfile_can_duplicate_manual_record_with_next_number(tmp_path: P
         "2026/HS/002",
         "2026/HS/003",
     ]
+
+
+def test_system_mapfile_keeps_new_manual_rows_at_bottom(tmp_path: Path) -> None:
+    db = Database(tmp_path / "app.sqlite3")
+    project_id = _create_project(db, tmp_path)
+    service = MapfileService(db)
+
+    service.add_manual_record(project_id, ["2026", "HS", "999"])
+    service.add_manual_record(project_id, ["2026", "HS", "001"])
+    records, total = db.list_system_records_page(project_id)
+
+    assert total == 2
+    assert [record["record_key"] for record in records] == [
+        "2026/HS/999",
+        "2026/HS/001",
+    ]

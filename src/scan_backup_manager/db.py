@@ -1747,14 +1747,21 @@ class Database:
                 WHERE project_id=:project_id
                 ORDER BY id DESC LIMIT 1
             ),
-            record_keys AS (
-                SELECT record_key FROM backup_files
+            record_key_sources AS (
+                SELECT record_key, 1000000000 + MIN(id) AS sort_order
+                FROM backup_files
                 WHERE project_id=:project_id AND record_key<>''
-                UNION
-                SELECT r.record_key
+                GROUP BY record_key
+                UNION ALL
+                SELECT r.record_key, r.row_number AS sort_order
                 FROM mapfile_rows r
                 JOIN latest_import i ON i.id=r.import_id
                 WHERE r.record_key<>''
+            ),
+            record_keys AS (
+                SELECT record_key, MIN(sort_order) AS sort_order
+                FROM record_key_sources
+                GROUP BY record_key
             ),
             backup_summary AS (
                 SELECT
@@ -1841,7 +1848,7 @@ class Database:
                 LEFT JOIN project_personnel scanner ON scanner.id=rw.scanner_id
                 LEFT JOIN project_personnel checker ON checker.id=rw.checker_id
                 WHERE {clause}
-                ORDER BY rk.record_key
+                ORDER BY rk.sort_order, rk.record_key
                 LIMIT :limit OFFSET :offset
                 """,
                 params,
