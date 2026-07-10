@@ -487,6 +487,39 @@ def test_check_assignment_lists_completed_scans_waiting_for_check(tmp_path: Path
         status="HASH_PENDING",
         hash_sha256="d" * 64,
     )
+    service.add_manual_record(project_id, ["2026", "HS", "WAITING"])
+    db.save_record_workflow(
+        project_id=project_id,
+        record_key="2026/HS/WAITING",
+        scanner_id=scanner_id,
+        scan_date="10/07/2026",
+        checker_id=None,
+        check_date="",
+        check_pages=0,
+        check_files=0,
+        record_status="PENDING_CHECK",
+        notes="",
+        paper_statuses=[
+            {
+                "paper_format_id": formats["A4"].id,
+                "scanner_id": scanner_id,
+                "scan_date": "10/07/2026",
+                "scan_status": "SCANNED",
+                "scan_pages": 7,
+                "scan_files": 1,
+                "check_pages": 0,
+                "notes": "",
+            }
+        ],
+    )
+    _add_file(
+        db,
+        project_id,
+        client="SCAN01",
+        name="WAITING.pdf",
+        status="HASH_PENDING",
+        hash_sha256="e" * 64,
+    )
 
     ready_records = db.list_check_ready_system_records(project_id)
 
