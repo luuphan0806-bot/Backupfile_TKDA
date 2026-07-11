@@ -1,0 +1,118 @@
+flowchart TD
+    %% =========================================================
+    %% 02. Vận hành hằng ngày: giao việc Scan, backup, Check
+    %% Mục tiêu: đưa hồ sơ từ NOT_STARTED/SCANNING tới PENDING_CHECK/COMPLETED.
+    %% =========================================================
+
+    READY([Dự án đã cấu hình + có danh mục hồ sơ]) --> SYSTEM_MAPFILE[Tab Mapfile hệ thống]
+
+    %% -------------------------
+    %% Giao việc Scan
+    %% -------------------------
+    SYSTEM_MAPFILE --> ASSIGN_SCAN[Leader tạo việc Scan]
+    ASSIGN_SCAN --> SELECT_SCAN_JOB[Chọn loại việc Scan]
+    SELECT_SCAN_JOB --> SELECT_SCANNER[Chọn nhân sự Scan]
+    SELECT_SCANNER --> SELECT_CLIENT[Chọn máy trạm / SMB share]
+    SELECT_CLIENT --> SELECT_RECORDS[Chọn hoặc nhập danh sách hồ sơ cần Scan]
+    SELECT_RECORDS --> SELECT_PAPER[Chọn khổ giấy cần scan: A4/A3/A0, có/không scan riêng]
+    SELECT_PAPER --> CLOSE_OLD_TASKS{Có chốt việc cũ của nhân sự?}
+
+    CLOSE_OLD_TASKS -->|Có| COMPLETE_OLD_TASKS[Đánh dấu task cũ COMPLETED]
+    COMPLETE_OLD_TASKS --> OLD_LEDGER[(attendance_entries: PENDING, chưa tự tính công)]
+    OLD_LEDGER --> CREATE_SCAN_TASK
+    CLOSE_OLD_TASKS -->|Không| CREATE_SCAN_TASK
+
+    CREATE_SCAN_TASK[Tạo project_tasks loại SCAN] --> CREATE_SCAN_FOLDER[Tạo thư mục trên máy trạm: project / nhân sự / ngày / công việc / hồ sơ]
+    CREATE_SCAN_FOLDER --> SAVE_SCAN_ASSIGNMENT[save_record_assignment: scanner_id, record_status SCANNING]
+    SAVE_SCAN_ASSIGNMENT --> SAVE_PAPER_STATUS[record_paper_statuses: PENDING_SCAN hoặc NOT_PRESENT]
+    SAVE_PAPER_STATUS --> SCAN_LEDGER[(attendance_entries: PENDING)]
+    SCAN_LEDGER --> STAFF_SCAN[Nhân sự scan PDF vào đúng thư mục máy trạm]
+
+    %% -------------------------
+    %% Backup service
+    %% -------------------------
+    STAFF_SCAN --> WAIT_SERVICE[Chờ Windows Service hoặc Leader bấm Sao lưu ngay]
+    DASHBOARD[Tab Bảng điều hành] --> MANUAL_BACKUP[Nút Sao lưu ngay]
+    CONFIG_AUTOMATION[Cấu hình tự động] --> AUTO_SCAN[Service tự enqueue SCAN_PROJECT theo chu kỳ]
+    MANUAL_BACKUP --> BACKUP_QUEUE[(backup_jobs)]
+    AUTO_SCAN --> BACKUP_QUEUE
+    WAIT_SERVICE --> BACKUP_QUEUE
+
+    BACKUP_QUEUE --> CLAIM_JOB[Worker claim job bằng operation_locks / lease]
+    CLAIM_JOB --> DISCOVER_FILES[Quét các máy trạm / SMB share đang bật]
+    DISCOVER_FILES --> VALIDATE_STRUCTURE{Cấu trúc thư mục hợp lệ?}
+
+    VALIDATE_STRUCTURE -->|Không| INVALID_STRUCTURE[backup_files: INVALID_STRUCTURE]
+    INVALID_STRUCTURE --> AUDIT_INVALID[audit_logs: lỗi cấu trúc]
+    AUDIT_INVALID --> DASHBOARD_ERROR[Dashboard hiển thị lỗi cần xử lý]
+
+    VALIDATE_STRUCTURE -->|Có| WAIT_STABLE[Chờ file ổn định theo stability_wait_seconds]
+    WAIT_STABLE --> COPY_STAGING[Copy vào staging]
+    COPY_STAGING --> COPY_BACKUP[Copy vào backup_root]
+    COPY_BACKUP --> DUPLICATE_CHECK{File đích đã tồn tại?}
+
+    DUPLICATE_CHECK -->|Chưa có| VERIFY_SIZE[Kiểm tra size]
+    DUPLICATE_CHECK -->|Giống hash / đã tồn tại| ALREADY_EXISTS[backup_files: ALREADY_EXISTS]
+    DUPLICATE_CHECK -->|Khác nội dung| CONFLICT[backup_files: CONFLICT + conflicts OPEN]
+
+    CONFLICT --> ARCHIVE_CONFLICT[Lưu file xung đột vào conflict_archive_dir]
+    ARCHIVE_CONFLICT --> DASHBOARD_CONFLICT[Dashboard hiển thị xung đột mở]
+    DASHBOARD_CONFLICT --> RESOLVE_CONFLICT{Leader xử lý xung đột?}
+    RESOLVE_CONFLICT -->|Thay thế| REPLACE_CONFLICT_JOB[enqueue REPLACE_CONFLICT]
+    RESOLVE_CONFLICT -->|Chưa xử lý| KEEP_OPEN[Giữ trạng thái OPEN]
+    REPLACE_CONFLICT_JOB --> BACKUP_QUEUE
+
+    VERIFY_SIZE --> HASH_PENDING[backup_files: HASH_PENDING]
+    HASH_PENDING --> UPDATE_BACKUP[Update record_key, file_kind, paper size nếu đọc được PDF]
+    ALREADY_EXISTS --> UPDATE_BACKUP
+
+    CONFIG_AUTOMATION --> AUTO_VERIFY[Service enqueue VERIFY_INTEGRITY hằng ngày]
+    AUTO_VERIFY --> VERIFY_JOB[(backup_jobs VERIFY_INTEGRITY)]
+    VERIFY_JOB --> VERIFY_HASH[Kiểm tra hash backup]
+    VERIFY_HASH -->|OK| LOCKED[backup_files: LOCKED / VERIFIED_HASH]
+    VERIFY_HASH -->|Lỗi| HASH_ERROR[backup_files: ERROR + audit]
+    LOCKED --> UPDATE_BACKUP
+    HASH_ERROR --> DASHBOARD_ERROR
+
+    %% -------------------------
+    %% Đồng bộ trạng thái hồ sơ
+    %% -------------------------
+    UPDATE_BACKUP --> SYNC_WORKFLOW[Đồng bộ record_workflows và record_paper_statuses]
+    SYNC_WORKFLOW --> HAS_SCAN_DATA{Có scan_pages hoặc scan_files?}
+
+    HAS_SCAN_DATA -->|Không| STILL_SCANNING[record_status vẫn SCANNING]
+    STILL_SCANNING --> SYSTEM_MAPFILE
+
+    HAS_SCAN_DATA -->|Có| MISSING_PAPER{Còn khổ giấy bắt buộc chưa scan?}
+    MISSING_PAPER -->|Có| PENDING_PAPER[record_status PENDING_PAPER]
+    PENDING_PAPER --> ASSIGN_SCAN
+    MISSING_PAPER -->|Không| PENDING_CHECK[record_status PENDING_CHECK]
+
+    %% -------------------------
+    %% Giao việc Check
+    %% -------------------------
+    PENDING_CHECK --> CHECK_READY_LIST[Danh sách hồ sơ sẵn sàng tạo việc Check]
+    CHECK_READY_LIST --> ASSIGN_CHECK[Leader tạo việc Check]
+    ASSIGN_CHECK --> SELECT_CHECK_JOB[Chọn loại việc Check]
+    SELECT_CHECK_JOB --> SELECT_CHECKER[Chọn nhân sự Check]
+    SELECT_CHECKER --> SELECT_CHECK_CLIENT[Chọn máy trạm Check]
+    SELECT_CHECK_CLIENT --> LOAD_CHECK_RECORDS[Load hồ sơ đã backup, PENDING_CHECK, chưa có check data]
+    LOAD_CHECK_RECORDS --> SELECT_CHECK_RECORDS[Tick hồ sơ cần Check]
+    SELECT_CHECK_RECORDS --> CREATE_CHECK_TASK[Tạo project_tasks loại CHECK]
+    CREATE_CHECK_TASK --> COPY_BACKUP_TO_CHECK[Copy file backup hợp lệ sang thư mục check]
+    COPY_BACKUP_TO_CHECK --> SAVE_CHECK_ASSIGNMENT[(record_check_assignments: ASSIGNED)]
+    SAVE_CHECK_ASSIGNMENT --> SAVE_CHECK_WORKFLOW[save_record_assignment: checker_id]
+    SAVE_CHECK_WORKFLOW --> CHECK_LEDGER[(attendance_entries: PENDING)]
+    CHECK_LEDGER --> CHECK_WORK[Nhân sự / Leader thực hiện kiểm tra]
+
+    CHECK_WORK --> CHECK_RESULT{Kết quả Check}
+    CHECK_RESULT -->|OK, có page/file check| SAVE_CHECK_COUNTS[save_automated_check_counts]
+    SAVE_CHECK_COUNTS --> COMPLETED[record_status COMPLETED]
+    COMPLETED --> MARK_CHECK_RECORDED[record_check_assignments: RECORDED]
+    MARK_CHECK_RECORDED --> READY_FOR_ATTENDANCE([Sẵn sàng Leader chốt công])
+
+    CHECK_RESULT -->|Lỗi cần scan lại| RESCAN_REQUIRED[record_status RESCAN_REQUIRED + audit]
+    RESCAN_REQUIRED --> ASSIGN_SCAN
+
+    CHECK_RESULT -->|Không tính công| CHECK_REJECT_NOTE[Ghi chú lý do không tính công]
+    CHECK_REJECT_NOTE --> READY_FOR_ATTENDANCE

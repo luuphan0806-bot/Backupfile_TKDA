@@ -10,13 +10,15 @@ from ...theme import content_switcher
     TAB_DASHBOARD,
     TAB_CATALOG,
     TAB_SYSTEM_MAPFILE,
+    TAB_LEADER_WORKBENCH,
     TAB_STATISTICS,
     TAB_SETTINGS,
-) = range(5)
+) = range(6)
 TAB_LABELS = [
     "Bảng điều hành",
     "Danh mục hồ sơ",
     "Mapfile hệ thống",
+    "Leader Workbench",
     "Thống kê",
     "Cấu hình",
 ]
@@ -24,6 +26,7 @@ TAB_ICONS = [
     ft.Icons.SPACE_DASHBOARD_OUTLINED,
     ft.Icons.VIEW_LIST_OUTLINED,
     ft.Icons.GRID_ON_OUTLINED,
+    ft.Icons.ASSIGNMENT_TURNED_IN_OUTLINED,
     ft.Icons.INSIGHTS_OUTLINED,
     ft.Icons.TUNE_OUTLINED,
 ]
@@ -79,6 +82,7 @@ class ConsoleContext:
         from . import (
             catalog_tab,
             dashboard_tab,
+            leader_workbench_tab,
             settings_tab,
             statistics_tab,
             system_mapfile_tab,
@@ -88,6 +92,7 @@ class ConsoleContext:
             TAB_DASHBOARD: dashboard_tab.build,
             TAB_CATALOG: catalog_tab.build,
             TAB_SYSTEM_MAPFILE: system_mapfile_tab.build,
+            TAB_LEADER_WORKBENCH: leader_workbench_tab.build,
             TAB_STATISTICS: statistics_tab.build,
             TAB_SETTINGS: settings_tab.build,
         }

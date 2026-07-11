@@ -98,6 +98,29 @@ class ProjectTask:
     status: str = "NEW"
     record_key: str = ""
     task_kind: str = ""
+    work_date: str = ""
+    started_at: str = ""
+    finished_at: str = ""
+    attendance_status: str = "PENDING"
+
+
+@dataclass(slots=True)
+class AttendanceEntry:
+    id: int | None
+    project_id: int
+    task_id: int | None
+    record_key: str
+    personnel_id: int
+    work_date: str
+    task_kind: str
+    job_title: str
+    quantity: int = 1
+    completed_count: int = 0
+    status: str = "PENDING"
+    approved_by: str = ""
+    approved_at: str = ""
+    override_reason: str = ""
+    notes: str = ""
 
 
 @dataclass(slots=True)

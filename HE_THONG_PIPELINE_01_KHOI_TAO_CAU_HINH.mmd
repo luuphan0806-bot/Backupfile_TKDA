@@ -1,0 +1,84 @@
+flowchart TD
+    %% =========================================================
+    %% 01. Khởi tạo & cấu hình dự án
+    %% Mục tiêu: đưa một dự án mới tới trạng thái sẵn sàng giao việc.
+    %% =========================================================
+
+    START([Mở Scan Backup Manager]) --> ROLE{Chọn khu vực}
+
+    ROLE -->|Quản trị viên / Leader| ADMIN_LOGIN[Đăng nhập Admin bằng mật khẩu]
+    ROLE -->|Nhân sự dự án| STAFF_LOGIN[Đăng nhập nhân sự bằng mã dự án + mã nhân sự + PIN]
+
+    ADMIN_LOGIN --> ADMIN_OK{Xác thực Admin hợp lệ?}
+    ADMIN_OK -->|Không| ADMIN_ERR[Thông báo sai mật khẩu]
+    ADMIN_ERR --> ADMIN_LOGIN
+    ADMIN_OK -->|Có| ADMIN_SHELL[Main Shell Admin]
+
+    STAFF_LOGIN --> STAFF_OK{Xác thực nhân sự hợp lệ?}
+    STAFF_OK -->|Không| STAFF_ERR[Thông báo sai thông tin hoặc tài khoản bị khóa]
+    STAFF_ERR --> STAFF_LOGIN
+    STAFF_OK -->|Có, cần đổi PIN| STAFF_CHANGE_PIN[Đổi PIN lần đầu]
+    STAFF_CHANGE_PIN --> STAFF_HOME[Màn hình nhân sự dự án]
+    STAFF_OK -->|Có| STAFF_HOME
+
+    ADMIN_SHELL --> PROJECT_LIST[Danh sách dự án]
+    PROJECT_LIST --> PROJECT_ACTION{Tạo mới hay mở dự án?}
+    PROJECT_ACTION -->|Tạo mới| CREATE_PROJECT[Tạo dự án: mã, tên, backup_root, staging, conflicts, reports]
+    PROJECT_ACTION -->|Mở có sẵn| OPEN_PROJECT[Mở dự án]
+
+    CREATE_PROJECT --> CENTRAL_DB[(SQLite trung tâm)]
+    CREATE_PROJECT --> PROJECT_DB[(SQLite phụ project_databases/MA_DU_AN.sqlite3)]
+    OPEN_PROJECT --> PROJECT_CONSOLE[Bảng điều khiển dự án]
+    CENTRAL_DB --> PROJECT_CONSOLE
+    PROJECT_DB --> PROJECT_CONSOLE
+
+    PROJECT_CONSOLE --> SETTINGS[Tab Cấu hình]
+    SETTINGS --> CONFIG_PROJECT[Thông tin dự án: mã, tên, thư mục vận hành]
+    SETTINGS --> CONFIG_TREE[Cấu trúc thư mục hồ sơ: năm, loại hồ sơ, mã hồ sơ, cấp tùy chỉnh]
+    SETTINGS --> CONFIG_CLIENTS[Khai báo máy trạm / SMB share nguồn]
+    SETTINGS --> CONFIG_PERSONNEL[Khai báo nhân sự, vai trò, trạng thái, PIN]
+    SETTINGS --> CONFIG_PAPER[Khai báo khổ giấy A4 / A3 / A0 và rule scan/check]
+    SETTINGS --> CONFIG_JOB_TYPES[Khai báo loại công việc: Scan / Check]
+    SETTINGS --> CONFIG_AUTOMATION[Chu kỳ quét tự động, thời gian ổn định file, kiểm tra sequence]
+
+    CONFIG_CLIENTS --> CLIENT_IMPORT_EXPORT{Nhập/xuất Excel máy trạm?}
+    CLIENT_IMPORT_EXPORT -->|Nhập Excel| IMPORT_CLIENTS[Import danh sách máy trạm]
+    CLIENT_IMPORT_EXPORT -->|Xuất mẫu / xuất dữ liệu| EXPORT_CLIENTS[Export Excel máy trạm]
+    IMPORT_CLIENTS --> CONFIG_CLIENTS
+    EXPORT_CLIENTS --> CONFIG_CLIENTS
+
+    CONFIG_PERSONNEL --> PERSONNEL_IMPORT_EXPORT{Nhập/xuất Excel nhân sự?}
+    PERSONNEL_IMPORT_EXPORT -->|Nhập Excel| IMPORT_PERSONNEL[Import danh sách nhân sự]
+    PERSONNEL_IMPORT_EXPORT -->|Xuất mẫu / xuất dữ liệu| EXPORT_PERSONNEL[Export Excel nhân sự]
+    IMPORT_PERSONNEL --> CONFIG_PERSONNEL
+    EXPORT_PERSONNEL --> CONFIG_PERSONNEL
+
+    CONFIG_PROJECT --> READY_CHECK{Đủ cấu hình vận hành?}
+    CONFIG_TREE --> READY_CHECK
+    CONFIG_CLIENTS --> READY_CHECK
+    CONFIG_PERSONNEL --> READY_CHECK
+    CONFIG_PAPER --> READY_CHECK
+    CONFIG_JOB_TYPES --> READY_CHECK
+    CONFIG_AUTOMATION --> READY_CHECK
+
+    READY_CHECK -->|Thiếu backup/staging/reports| FIX_PROJECT_PATH[Sửa thư mục dự án]
+    READY_CHECK -->|Thiếu cây thư mục| FIX_TREE[Sửa cấu trúc hồ sơ]
+    READY_CHECK -->|Thiếu máy trạm| FIX_CLIENTS[Thêm máy trạm / SMB share]
+    READY_CHECK -->|Thiếu nhân sự| FIX_PERSONNEL[Thêm nhân sự / cấp PIN]
+    READY_CHECK -->|Thiếu loại việc hoặc khổ giấy| FIX_JOB_RULES[Sửa loại việc / khổ giấy]
+
+    FIX_PROJECT_PATH --> SETTINGS
+    FIX_TREE --> SETTINGS
+    FIX_CLIENTS --> SETTINGS
+    FIX_PERSONNEL --> SETTINGS
+    FIX_JOB_RULES --> SETTINGS
+
+    READY_CHECK -->|Đủ| RECORD_SOURCE{Tạo danh mục hồ sơ bằng cách nào?}
+    RECORD_SOURCE -->|Import mapfile Excel| IMPORT_MAPFILE[Import mapfile Excel]
+    RECORD_SOURCE -->|Nhập tay| MANUAL_RECORD[Thêm dòng hồ sơ trực tiếp]
+
+    IMPORT_MAPFILE --> MAPFILE_ROWS[(mapfile_rows)]
+    MANUAL_RECORD --> MAPFILE_ROWS
+    MAPFILE_ROWS --> SYSTEM_RECORDS[Danh sách hồ sơ hệ thống theo record_key]
+    SYSTEM_RECORDS --> NOT_STARTED[record_status mặc định: NOT_STARTED]
+    NOT_STARTED --> READY_TO_OPERATE([Dự án sẵn sàng vận hành hằng ngày])

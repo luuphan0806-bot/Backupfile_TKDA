@@ -4,6 +4,20 @@
 
 $ErrorActionPreference = "Stop"
 
+# Guard the interpreter used for packaging. flet pack + PyInstaller are only
+# validated on the versions declared in pyproject.toml (>=3.11,<3.14); 3.12 is
+# the recommended target. Building on an untested interpreter can produce an
+# EXE that behaves differently from the tested source.
+$pyVersion = & python -c "import sys; print('%d.%d' % sys.version_info[:2])"
+$supported = @("3.11", "3.12", "3.13")
+if ($supported -notcontains $pyVersion) {
+    throw "Python $pyVersion is outside the supported build range (3.11-3.13; 3.12 recommended). Activate a supported interpreter before building."
+}
+if ($pyVersion -ne "3.12") {
+    Write-Warning "Building with Python $pyVersion. The recommended/tested packaging target is 3.12."
+}
+Write-Host "Building with Python $pyVersion"
+
 flet pack main.py -n ScanBackupManager --distpath dist -y
 if ($LASTEXITCODE -ne 0) {
     throw "ScanBackupManager build failed with exit code $LASTEXITCODE"

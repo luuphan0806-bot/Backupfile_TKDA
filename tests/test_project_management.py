@@ -44,6 +44,15 @@ def test_create_project_creates_project_sqlite_and_delete_removes_project(tmp_pa
             task_kind="SCAN",
         )
     )
+    db.sync_project_database(project_id)
+
+    with closing(sqlite3.connect(project_db)) as conn:
+        assert conn.execute("SELECT COUNT(*) FROM project_tasks").fetchone()[0] == 1
+        assert conn.execute("SELECT COUNT(*) FROM attendance_entries").fetchone()[0] == 1
+        sync_row = conn.execute(
+            "SELECT value FROM project_sync_status WHERE key='last_synced_at'"
+        ).fetchone()
+    assert sync_row is not None
 
     db.delete_project(project_id)
 

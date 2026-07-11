@@ -1,0 +1,74 @@
+flowchart TD
+    %% =========================================================
+    %% 04. Thống kê, trích xuất chấm công & audit
+    %% Mục tiêu: xuất dữ liệu vận hành từ nguồn đã được Leader duyệt.
+    %% =========================================================
+
+    START([Leader mở tab Thống kê]) --> SELECT_RANGE[Chọn khoảng ngày]
+    SELECT_RANGE --> LOAD_APPROVED[StatisticsService đọc attendance_entries status APPROVED]
+
+    LOAD_APPROVED --> NO_APPROVED{Có dòng công đã duyệt?}
+    NO_APPROVED -->|Không| EMPTY_STATS[Hiển thị không có dữ liệu chấm công đã duyệt]
+    EMPTY_STATS --> GO_WORKBENCH[Quay lại Leader Workbench để duyệt công]
+
+    NO_APPROVED -->|Có| BUILD_STATS[Tính thống kê]
+    BUILD_STATS --> DAILY_KPI[KPI theo ngày: sản lượng, số đã chốt, loại việc, nhân sự tham gia]
+    BUILD_STATS --> PERSONNEL_DETAIL[Chi tiết nhân sự: thứ tự việc, công việc, Scan/Check, sản lượng, giờ bắt đầu/cập nhật]
+    BUILD_STATS --> JOB_SUMMARY[Tổng hợp theo loại công việc Scan/Check]
+    BUILD_STATS --> PAPER_SUMMARY[Tổng hợp khổ giấy/page/file nếu có dữ liệu PDF]
+
+    DAILY_KPI --> STAT_SCREEN[Màn hình thống kê]
+    PERSONNEL_DETAIL --> STAT_SCREEN
+    JOB_SUMMARY --> STAT_SCREEN
+    PAPER_SUMMARY --> STAT_SCREEN
+
+    STAT_SCREEN --> EXPORT_CHOICE{Leader xuất báo cáo nào?}
+
+    %% -------------------------
+    %% Xuất chấm công
+    %% -------------------------
+    EXPORT_CHOICE -->|Xuất chấm công| EXPORT_ATTENDANCE[ReportService.export_attendance_report]
+    EXPORT_ATTENDANCE --> SHEET_ATTENDANCE[Sheet Cham cong: chỉ dòng APPROVED]
+    EXPORT_ATTENDANCE --> SHEET_SUMMARY[Sheet Tong hop: tổng theo ngày + nhân sự]
+    EXPORT_ATTENDANCE --> SHEET_RAW[Sheet San luong tho: toàn bộ ledger PENDING/APPROVED/REJECTED/VOID]
+    EXPORT_ATTENDANCE --> SHEET_EXCEPTION[Sheet Ngoai le: thiếu điều kiện, override, chưa duyệt, không tính công]
+    EXPORT_ATTENDANCE --> SHEET_AUDIT[Sheet Audit chinh sua: duyệt, override, không tính công, xuất báo cáo]
+    SHEET_ATTENDANCE --> ATTENDANCE_FILE[(attendance_report_date_from_date_to_timestamp.xlsx)]
+    SHEET_SUMMARY --> ATTENDANCE_FILE
+    SHEET_RAW --> ATTENDANCE_FILE
+    SHEET_EXCEPTION --> ATTENDANCE_FILE
+    SHEET_AUDIT --> ATTENDANCE_FILE
+
+    %% -------------------------
+    %% Xuất thống kê
+    %% -------------------------
+    EXPORT_CHOICE -->|Xuất thống kê| EXPORT_STATISTICS[ReportService.export_statistics_report]
+    EXPORT_STATISTICS --> STATISTICS_FILE[(statistics_report_date_from_date_to_timestamp.xlsx)]
+
+    %% -------------------------
+    %% Xuất backup report
+    %% -------------------------
+    DASHBOARD[Tab Bảng điều hành] --> EXPORT_BACKUP[ReportService.export_daily_report]
+    EXPORT_BACKUP --> BACKUP_FILE[(scan_backup_report_timestamp.xlsx)]
+    BACKUP_FILE --> BACKUP_SHEETS[Backup Files, Conflicts, Summary]
+
+    %% -------------------------
+    %% Audit
+    %% -------------------------
+    ATTENDANCE_FILE --> AUDIT_EXPORT[audit_logs: ATTENDANCE_REPORT_EXPORTED]
+    STATISTICS_FILE --> AUDIT_STAT[audit_logs: STATISTICS_REPORT_EXPORTED]
+    BACKUP_FILE --> AUDIT_BACKUP[audit_logs: report/backup actions]
+
+    AUDIT_EXPORT --> AUDIT_VIEW[Nhật ký hệ thống]
+    AUDIT_STAT --> AUDIT_VIEW
+    AUDIT_BACKUP --> AUDIT_VIEW
+
+    AUDIT_VIEW --> AUDIT_FILTER[Lọc theo dự án, action, ngày]
+    AUDIT_FILTER --> AUDIT_RESULT[Bảng audit: thời điểm, action, message, source/dest nếu có]
+
+    AUDIT_RESULT --> OPERATE_REVIEW{Leader rà soát phát hiện vấn đề?}
+    OPERATE_REVIEW -->|Có| BACK_TO_WORKBENCH[Quay lại Workbench hoặc Mapfile để sửa/chốt lại]
+    OPERATE_REVIEW -->|Không| FINAL_PACKAGE[Hoàn tất gói vận hành: hồ sơ + backup + audit + bảng công]
+
+    BACK_TO_WORKBENCH --> GO_WORKBENCH
+    GO_WORKBENCH --> FINAL_PACKAGE

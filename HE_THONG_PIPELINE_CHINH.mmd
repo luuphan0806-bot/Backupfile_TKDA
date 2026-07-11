@@ -1,0 +1,35 @@
+flowchart LR
+    %% =========================================================
+    %% Scan Backup Manager - Mục lục pipeline hệ thống
+    %% Các pipeline chi tiết được tách thành từng file riêng để dễ đọc/render.
+    %% =========================================================
+
+    A([01. Khởi tạo & cấu hình dự án])
+    B([02. Vận hành hằng ngày: giao việc Scan, backup, Check])
+    C([03. Leader Workbench & chốt công])
+    D([04. Thống kê, trích xuất chấm công & audit])
+
+    A --> B
+    B --> C
+    C --> D
+    D --> B
+
+    A_DETAIL[HE_THONG_PIPELINE_01_KHOI_TAO_CAU_HINH.mmd]
+    B_DETAIL[HE_THONG_PIPELINE_02_VAN_HANH_HANG_NGAY.mmd]
+    C_DETAIL[HE_THONG_PIPELINE_03_LEADER_CHOT_CONG.mmd]
+    D_DETAIL[HE_THONG_PIPELINE_04_BAO_CAO_CHAM_CONG_AUDIT.mmd]
+
+    A -. chi tiết .-> A_DETAIL
+    B -. chi tiết .-> B_DETAIL
+    C -. chi tiết .-> C_DETAIL
+    D -. chi tiết .-> D_DETAIL
+
+    A_NOTE[Khởi tạo app, đăng nhập Admin, tạo dự án, khai báo cây thư mục, máy trạm, nhân sự, loại việc, khổ giấy]
+    B_NOTE[Giao việc Scan, tạo thư mục máy trạm, service backup, xử lý lỗi/xung đột, chuyển hồ sơ sang PENDING_CHECK, giao việc Check]
+    C_NOTE[Ledger PENDING, kiểm tra điều kiện nghiệm thu, duyệt công, override có lý do, không tính công]
+    D_NOTE[Thống kê từ dòng APPROVED, xuất Excel, raw ledger, ngoại lệ, audit chỉnh sửa]
+
+    A --> A_NOTE
+    B --> B_NOTE
+    C --> C_NOTE
+    D --> D_NOTE

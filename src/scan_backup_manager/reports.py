@@ -302,6 +302,124 @@ class ReportService:
             ],
         )
 
+        raw_entries = self.db.list_attendance_entries(project_id, date_from, date_to)
+        raw_sheet = workbook.create_sheet("San luong tho")
+        _write_rows(
+            raw_sheet,
+            [
+                "id",
+                "work_date",
+                "personnel_code",
+                "full_name",
+                "record_key",
+                "job_title",
+                "task_kind",
+                "quantity",
+                "completed_count",
+                "status",
+                "task_status",
+                "record_status",
+                "approved_by",
+                "approved_at",
+                "override_reason",
+                "notes",
+            ],
+            [
+                {
+                    "id": row["id"],
+                    "work_date": row["work_date"],
+                    "personnel_code": row["personnel_code"],
+                    "full_name": row["full_name"],
+                    "record_key": row["record_key"],
+                    "job_title": row["job_title"],
+                    "task_kind": _kind_label(row["task_kind"]),
+                    "quantity": row["quantity"],
+                    "completed_count": row["completed_count"],
+                    "status": row["status"],
+                    "task_status": row["task_status"] or "",
+                    "record_status": row["record_status"],
+                    "approved_by": row["approved_by"],
+                    "approved_at": row["approved_at"],
+                    "override_reason": row["override_reason"],
+                    "notes": row["notes"],
+                }
+                for row in raw_entries
+            ],
+        )
+
+        exception_sheet = workbook.create_sheet("Ngoai le")
+        _write_rows(
+            exception_sheet,
+            [
+                "id",
+                "work_date",
+                "personnel_code",
+                "full_name",
+                "record_key",
+                "job_title",
+                "task_kind",
+                "status",
+                "task_status",
+                "record_status",
+                "has_scan_backup",
+                "check_pages",
+                "check_files",
+                "notes",
+            ],
+            [
+                {
+                    "id": row["id"],
+                    "work_date": row["work_date"],
+                    "personnel_code": row["personnel_code"],
+                    "full_name": row["full_name"],
+                    "record_key": row["record_key"],
+                    "job_title": row["job_title"],
+                    "task_kind": _kind_label(row["task_kind"]),
+                    "status": row["status"],
+                    "task_status": row["task_status"] or "",
+                    "record_status": row["record_status"],
+                    "has_scan_backup": int(row["has_scan_backup"] or 0),
+                    "check_pages": row["check_pages"],
+                    "check_files": row["check_files"],
+                    "notes": row["notes"],
+                }
+                for row in raw_entries
+                if row["status"] != "APPROVED"
+                or row["override_reason"]
+                or (row["task_kind"] == "SCAN" and not row["has_scan_backup"])
+                or (row["task_kind"] == "CHECK" and row["record_status"] != "COMPLETED")
+            ],
+        )
+
+        with self.db.connect() as conn:
+            audit_rows = conn.execute(
+                """
+                SELECT action, message, created_at FROM audit_logs
+                WHERE project_id=?
+                    AND action IN (
+                        'ATTENDANCE_APPROVED',
+                        'ATTENDANCE_REJECTED',
+                        'ATTENDANCE_REPORT_EXPORTED'
+                    )
+                    AND substr(created_at, 1, 10) BETWEEN ? AND ?
+                ORDER BY created_at DESC
+                """,
+                (project_id, date_from, date_to),
+            ).fetchall()
+        audit_sheet = workbook.create_sheet("Audit chinh sua")
+        _write_rows(
+            audit_sheet,
+            ["created_at", "action", "message"],
+            [
+                {
+                    "created_at": row["created_at"],
+                    "action": row["action"],
+                    "message": row["message"],
+                }
+                for row in audit_rows
+            ],
+        )
+
         output = (
             output_dir
             / f"attendance_report_{date_from}_{date_to}_{datetime.now():%Y%m%d_%H%M%S}.xlsx"

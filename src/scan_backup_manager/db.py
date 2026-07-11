@@ -31,7 +31,7 @@ from .models import (
 )
 
 
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7
 DEFAULT_ADMIN_PASSWORD = "Admin@123"
 PBKDF2_ITERATIONS = 600_000
 
@@ -57,6 +57,7 @@ RECORD_WORKFLOW_STATUSES = {
     "RESCAN_REQUIRED",
 }
 MANUAL_RECORD_STATUSES = {"COMPLETED", "RESCAN_REQUIRED"}
+ATTENDANCE_STATUSES = {"PENDING", "APPROVED", "REJECTED", "VOID"}
 # SQL fragment kept in sync with constants.COUNTABLE_BACKUP_STATUSES (values are
 # trusted module constants, safe to inline).
 _COUNTABLE_SQL = ", ".join(f"'{status}'" for status in sorted(COUNTABLE_BACKUP_STATUSES))
@@ -183,6 +184,7 @@ class Database:
             # Idempotent so partially upgraded databases can repair themselves.
             self._migrate_to_v5(conn)
             self._migrate_to_v6(conn, current_version)
+            self._migrate_to_v7(conn)
             conn.execute(
                 """
                 CREATE INDEX IF NOT EXISTS idx_backup_project_record
@@ -312,11 +314,42 @@ class Database:
                 record_key TEXT NOT NULL DEFAULT '',
                 task_kind TEXT NOT NULL DEFAULT ''
                     CHECK(task_kind IN ('', 'SCAN', 'CHECK')),
+                work_date TEXT NOT NULL DEFAULT '',
+                started_at TEXT NOT NULL DEFAULT '',
+                finished_at TEXT NOT NULL DEFAULT '',
+                attendance_status TEXT NOT NULL DEFAULT 'PENDING'
+                    CHECK(attendance_status IN ('PENDING', 'APPROVED', 'REJECTED', 'VOID')),
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL,
                 FOREIGN KEY(project_id) REFERENCES projects(id) ON DELETE CASCADE,
                 FOREIGN KEY(assignee_id) REFERENCES project_personnel(id),
                 UNIQUE(project_id, task_code)
+            );
+
+            CREATE TABLE IF NOT EXISTS attendance_entries(
+                id INTEGER PRIMARY KEY,
+                project_id INTEGER NOT NULL,
+                task_id INTEGER,
+                record_key TEXT NOT NULL DEFAULT '',
+                personnel_id INTEGER NOT NULL,
+                work_date TEXT NOT NULL,
+                task_kind TEXT NOT NULL DEFAULT 'SCAN'
+                    CHECK(task_kind IN ('SCAN', 'CHECK')),
+                job_title TEXT NOT NULL DEFAULT '',
+                quantity INTEGER NOT NULL DEFAULT 1,
+                completed_count INTEGER NOT NULL DEFAULT 0,
+                status TEXT NOT NULL DEFAULT 'PENDING'
+                    CHECK(status IN ('PENDING', 'APPROVED', 'REJECTED', 'VOID')),
+                approved_by TEXT NOT NULL DEFAULT '',
+                approved_at TEXT NOT NULL DEFAULT '',
+                override_reason TEXT NOT NULL DEFAULT '',
+                notes TEXT NOT NULL DEFAULT '',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                FOREIGN KEY(project_id) REFERENCES projects(id) ON DELETE CASCADE,
+                FOREIGN KEY(task_id) REFERENCES project_tasks(id) ON DELETE SET NULL,
+                FOREIGN KEY(personnel_id) REFERENCES project_personnel(id),
+                UNIQUE(project_id, task_id)
             );
 
             CREATE TABLE IF NOT EXISTS paper_formats(
@@ -859,6 +892,84 @@ class Database:
         # Seeding needs job_kind to exist, so it happens here rather than in v5.
         self._seed_job_types(conn)
 
+    def _migrate_to_v7(self, conn: sqlite3.Connection) -> None:
+        task_columns = {
+            row[1] for row in conn.execute("PRAGMA table_info(project_tasks)").fetchall()
+        }
+        if "work_date" not in task_columns:
+            conn.execute("ALTER TABLE project_tasks ADD COLUMN work_date TEXT NOT NULL DEFAULT ''")
+        if "started_at" not in task_columns:
+            conn.execute("ALTER TABLE project_tasks ADD COLUMN started_at TEXT NOT NULL DEFAULT ''")
+        if "finished_at" not in task_columns:
+            conn.execute("ALTER TABLE project_tasks ADD COLUMN finished_at TEXT NOT NULL DEFAULT ''")
+        if "attendance_status" not in task_columns:
+            conn.execute(
+                """
+                ALTER TABLE project_tasks ADD COLUMN attendance_status TEXT NOT NULL DEFAULT 'PENDING'
+                    CHECK(attendance_status IN ('PENDING', 'APPROVED', 'REJECTED', 'VOID'))
+                """
+            )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS attendance_entries(
+                id INTEGER PRIMARY KEY,
+                project_id INTEGER NOT NULL,
+                task_id INTEGER,
+                record_key TEXT NOT NULL DEFAULT '',
+                personnel_id INTEGER NOT NULL,
+                work_date TEXT NOT NULL,
+                task_kind TEXT NOT NULL DEFAULT 'SCAN'
+                    CHECK(task_kind IN ('SCAN', 'CHECK')),
+                job_title TEXT NOT NULL DEFAULT '',
+                quantity INTEGER NOT NULL DEFAULT 1,
+                completed_count INTEGER NOT NULL DEFAULT 0,
+                status TEXT NOT NULL DEFAULT 'PENDING'
+                    CHECK(status IN ('PENDING', 'APPROVED', 'REJECTED', 'VOID')),
+                approved_by TEXT NOT NULL DEFAULT '',
+                approved_at TEXT NOT NULL DEFAULT '',
+                override_reason TEXT NOT NULL DEFAULT '',
+                notes TEXT NOT NULL DEFAULT '',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                FOREIGN KEY(project_id) REFERENCES projects(id) ON DELETE CASCADE,
+                FOREIGN KEY(task_id) REFERENCES project_tasks(id) ON DELETE SET NULL,
+                FOREIGN KEY(personnel_id) REFERENCES project_personnel(id),
+                UNIQUE(project_id, task_id)
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_attendance_project_date
+            ON attendance_entries(project_id, work_date, status)
+            """
+        )
+        conn.execute(
+            """
+            INSERT OR IGNORE INTO attendance_entries(
+                project_id, task_id, record_key, personnel_id, work_date, task_kind,
+                job_title, quantity, completed_count, status, created_at, updated_at
+            )
+            SELECT
+                project_id, id, COALESCE(NULLIF(record_key, ''), ''),
+                assignee_id,
+                COALESCE(NULLIF(work_date, ''), substr(created_at, 1, 10)),
+                COALESCE(NULLIF(task_kind, ''), 'SCAN'),
+                title,
+                1,
+                CASE WHEN status='COMPLETED' THEN 1 ELSE 0 END,
+                CASE
+                    WHEN status='CANCELLED' THEN 'VOID'
+                    WHEN attendance_status IN ('APPROVED', 'REJECTED', 'VOID')
+                    THEN attendance_status
+                    ELSE 'PENDING'
+                END,
+                created_at,
+                updated_at
+            FROM project_tasks
+            """
+        )
+
     @staticmethod
     def _migrate_v6_record_statuses(conn: sqlite3.Connection) -> None:
         """One-time repair for records force-completed by the old "chốt việc"
@@ -1069,6 +1180,45 @@ class Database:
         code = project_code.strip().upper()
         return self.db_path.parent / "project_databases" / f"{code}.sqlite3"
 
+    @staticmethod
+    def _quote_identifier(name: str) -> str:
+        return '"' + name.replace('"', '""') + '"'
+
+    def _snapshot_rows(
+        self, conn: sqlite3.Connection, table: str, where: str, params: tuple[Any, ...]
+    ) -> tuple[list[str], list[sqlite3.Row]]:
+        columns = [
+            str(row["name"])
+            for row in conn.execute(f"PRAGMA table_info({self._quote_identifier(table)})")
+        ]
+        if not columns:
+            return [], []
+        select_columns = ", ".join(self._quote_identifier(column) for column in columns)
+        rows = conn.execute(
+            f"SELECT {select_columns} FROM {self._quote_identifier(table)} WHERE {where}",
+            params,
+        ).fetchall()
+        return columns, rows
+
+    def _replace_project_snapshot_table(
+        self,
+        destination: sqlite3.Connection,
+        table: str,
+        columns: list[str],
+        rows: list[sqlite3.Row],
+    ) -> None:
+        quoted_table = self._quote_identifier(table)
+        destination.execute(f"DROP TABLE IF EXISTS {quoted_table}")
+        column_sql = ", ".join(self._quote_identifier(column) for column in columns)
+        destination.execute(f"CREATE TABLE {quoted_table}({column_sql})")
+        if not rows:
+            return
+        placeholders = ", ".join("?" for _ in columns)
+        destination.executemany(
+            f"INSERT INTO {quoted_table}({column_sql}) VALUES({placeholders})",
+            [[row[column] for column in columns] for row in rows],
+        )
+
     def ensure_project_database(self, project_id: int) -> Path:
         project = self.get_project(project_id)
         if not project:
@@ -1102,6 +1252,451 @@ class Database:
                 )
             conn.commit()
         return destination
+
+    def sync_project_database(self, project_id: int) -> Path:
+        """Refresh the per-project SQLite snapshot for recovery and audit.
+
+        The central runtime DB remains authoritative while the app runs. The
+        per-project DB mirrors project-scoped operational tables so one
+        project's config, workflow, backup records, jobs, ledger and audit log
+        are available for next-day review or manual recovery.
+        """
+        project = self.get_project(project_id)
+        if not project:
+            raise ValueError(f"Project not found: {project_id}")
+        destination = self.ensure_project_database(project_id)
+        now = utc_now()
+        simple_project_tables = [
+            "projects",
+            "project_settings",
+            "project_directory_levels",
+            "clients",
+            "project_personnel",
+            "personnel_credentials",
+            "mapfile_profiles",
+            "mapfile_imports",
+            "paper_formats",
+            "project_job_types",
+            "project_tasks",
+            "record_workflows",
+            "record_check_assignments",
+            "backup_files",
+            "attendance_entries",
+            "backup_jobs",
+            "audit_logs",
+        ]
+        with self.connect() as source, closing(sqlite3.connect(destination)) as target:
+            target.row_factory = sqlite3.Row
+            target.execute("PRAGMA journal_mode = WAL")
+            target.execute(
+                """
+                CREATE TABLE IF NOT EXISTS project_sync_status(
+                    key TEXT PRIMARY KEY,
+                    value TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                )
+                """
+            )
+            for table in simple_project_tables:
+                if table == "projects":
+                    where = "id=?"
+                elif table == "personnel_credentials":
+                    where = (
+                        "personnel_id IN (SELECT id FROM project_personnel WHERE project_id=?)"
+                    )
+                else:
+                    where = "project_id=?"
+                columns, rows = self._snapshot_rows(source, table, where, (project_id,))
+                if columns:
+                    self._replace_project_snapshot_table(target, table, columns, rows)
+
+            dependent_tables = {
+                "mapfile_rows": (
+                    "import_id IN (SELECT id FROM mapfile_imports WHERE project_id=?)"
+                ),
+                "record_paper_statuses": (
+                    "record_id IN (SELECT id FROM record_workflows WHERE project_id=?)"
+                ),
+                "backup_file_paper_sizes": (
+                    "backup_file_id IN (SELECT id FROM backup_files WHERE project_id=?)"
+                ),
+                "conflicts": (
+                    "backup_file_id IN (SELECT id FROM backup_files WHERE project_id=?)"
+                ),
+            }
+            for table, where in dependent_tables.items():
+                columns, rows = self._snapshot_rows(source, table, where, (project_id,))
+                if columns:
+                    self._replace_project_snapshot_table(target, table, columns, rows)
+
+            metadata = {
+                "project_id": str(project_id),
+                "project_code": project.project_code,
+                "display_name": project.display_name,
+                "central_db_path": str(self.db_path),
+                "snapshot_schema_version": str(SCHEMA_VERSION),
+                "last_synced_at": now,
+            }
+            for key, value in metadata.items():
+                target.execute(
+                    """
+                    INSERT INTO project_sync_status(key, value, updated_at)
+                    VALUES(?, ?, ?)
+                    ON CONFLICT(key) DO UPDATE SET
+                        value=excluded.value,
+                        updated_at=excluded.updated_at
+                    """,
+                    (key, value, now),
+                )
+                target.execute(
+                    """
+                    INSERT INTO project_metadata(key, value, updated_at)
+                    VALUES(?, ?, ?)
+                    ON CONFLICT(key) DO UPDATE SET
+                        value=excluded.value,
+                        updated_at=excluded.updated_at
+                    """,
+                    (key, value, now),
+                )
+            target.commit()
+        self.record_audit(
+            "PROJECT_DATABASE_SYNCED",
+            f"Synced project database snapshot to {destination}",
+            project_id=project_id,
+        )
+        return destination
+
+    @staticmethod
+    def _snapshot_table_exists(conn: sqlite3.Connection, table: str) -> bool:
+        return conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",
+            (table,),
+        ).fetchone() is not None
+
+    def _snapshot_table_rows(
+        self, conn: sqlite3.Connection, table: str
+    ) -> list[sqlite3.Row]:
+        if not self._snapshot_table_exists(conn, table):
+            return []
+        return conn.execute(
+            f"SELECT * FROM {self._quote_identifier(table)} ORDER BY rowid"
+        ).fetchall()
+
+    def _insert_snapshot_row(
+        self,
+        conn: sqlite3.Connection,
+        table: str,
+        row: sqlite3.Row,
+        *,
+        overrides: dict[str, Any] | None = None,
+        drop: set[str] | None = None,
+    ) -> int | None:
+        values = dict(row)
+        for column in drop or set():
+            values.pop(column, None)
+        for column, value in (overrides or {}).items():
+            values[column] = value
+        columns = list(values)
+        if not columns:
+            return None
+        column_sql = ", ".join(self._quote_identifier(column) for column in columns)
+        placeholders = ", ".join("?" for _ in columns)
+        cursor = conn.execute(
+            f"INSERT INTO {self._quote_identifier(table)}({column_sql}) VALUES({placeholders})",
+            [values[column] for column in columns],
+        )
+        return int(cursor.lastrowid) if cursor.lastrowid else None
+
+    def import_project_database(self, source_path: Path | str) -> int:
+        """Load a portable per-project DB snapshot into the central database.
+
+        The imported project keeps its project_code and operational data. Local
+        integer IDs are remapped so the snapshot can be imported into a central
+        DB that already contains other projects.
+        """
+        source_path = Path(source_path)
+        if not source_path.exists():
+            raise ValueError(f"Project database not found: {source_path}")
+        with closing(sqlite3.connect(source_path)) as source:
+            source.row_factory = sqlite3.Row
+            if not self._snapshot_table_exists(source, "projects"):
+                raise ValueError("Selected file is not a portable project database.")
+            project_rows = self._snapshot_table_rows(source, "projects")
+            if len(project_rows) != 1:
+                raise ValueError("Project database must contain exactly one project.")
+            project_row = project_rows[0]
+            project_code = str(project_row["project_code"] or "").strip().upper()
+            if not project_code:
+                raise ValueError("Project database is missing project_code.")
+            with self.connect() as target:
+                exists = target.execute(
+                    "SELECT 1 FROM projects WHERE project_code=?",
+                    (project_code,),
+                ).fetchone()
+                if exists:
+                    raise ValueError(f"Mã dự án '{project_code}' đã tồn tại.")
+
+                new_project_id = self._insert_snapshot_row(
+                    target,
+                    "projects",
+                    project_row,
+                    overrides={"project_code": project_code},
+                    drop={"id"},
+                )
+                if new_project_id is None:
+                    raise ValueError("Could not import project.")
+
+                person_map: dict[int, int] = {}
+                profile_map: dict[int, int] = {}
+                import_map: dict[int, int] = {}
+                paper_map: dict[int, int] = {}
+                task_map: dict[int, int] = {}
+                workflow_map: dict[int, int] = {}
+                backup_file_map: dict[int, int] = {}
+
+                for table in ("project_settings",):
+                    for row in self._snapshot_table_rows(source, table):
+                        self._insert_snapshot_row(
+                            target, table, row, overrides={"project_id": new_project_id}
+                        )
+
+                for table in ("project_directory_levels", "clients", "project_job_types"):
+                    for row in self._snapshot_table_rows(source, table):
+                        self._insert_snapshot_row(
+                            target,
+                            table,
+                            row,
+                            overrides={"project_id": new_project_id},
+                            drop={"id"},
+                        )
+
+                for row in self._snapshot_table_rows(source, "project_personnel"):
+                    old_id = int(row["id"])
+                    new_id = self._insert_snapshot_row(
+                        target,
+                        "project_personnel",
+                        row,
+                        overrides={"project_id": new_project_id},
+                        drop={"id"},
+                    )
+                    if new_id is not None:
+                        person_map[old_id] = new_id
+
+                for row in self._snapshot_table_rows(source, "personnel_credentials"):
+                    old_person = int(row["personnel_id"])
+                    if old_person not in person_map:
+                        continue
+                    self._insert_snapshot_row(
+                        target,
+                        "personnel_credentials",
+                        row,
+                        overrides={"personnel_id": person_map[old_person]},
+                    )
+
+                for row in self._snapshot_table_rows(source, "mapfile_profiles"):
+                    old_id = int(row["id"])
+                    new_id = self._insert_snapshot_row(
+                        target,
+                        "mapfile_profiles",
+                        row,
+                        overrides={"project_id": new_project_id},
+                        drop={"id"},
+                    )
+                    if new_id is not None:
+                        profile_map[old_id] = new_id
+
+                for row in self._snapshot_table_rows(source, "mapfile_imports"):
+                    old_id = int(row["id"])
+                    old_profile = row["profile_id"]
+                    overrides: dict[str, Any] = {"project_id": new_project_id}
+                    if old_profile is not None:
+                        overrides["profile_id"] = profile_map.get(int(old_profile))
+                    new_id = self._insert_snapshot_row(
+                        target,
+                        "mapfile_imports",
+                        row,
+                        overrides=overrides,
+                        drop={"id"},
+                    )
+                    if new_id is not None:
+                        import_map[old_id] = new_id
+
+                for row in self._snapshot_table_rows(source, "mapfile_rows"):
+                    old_import = int(row["import_id"])
+                    if old_import not in import_map:
+                        continue
+                    self._insert_snapshot_row(
+                        target,
+                        "mapfile_rows",
+                        row,
+                        overrides={"import_id": import_map[old_import]},
+                        drop={"id"},
+                    )
+
+                for row in self._snapshot_table_rows(source, "paper_formats"):
+                    old_id = int(row["id"])
+                    new_id = self._insert_snapshot_row(
+                        target,
+                        "paper_formats",
+                        row,
+                        overrides={"project_id": new_project_id},
+                        drop={"id"},
+                    )
+                    if new_id is not None:
+                        paper_map[old_id] = new_id
+
+                for row in self._snapshot_table_rows(source, "project_tasks"):
+                    old_id = int(row["id"])
+                    assignee = person_map.get(int(row["assignee_id"]))
+                    if assignee is None:
+                        continue
+                    new_id = self._insert_snapshot_row(
+                        target,
+                        "project_tasks",
+                        row,
+                        overrides={
+                            "project_id": new_project_id,
+                            "assignee_id": assignee,
+                        },
+                        drop={"id"},
+                    )
+                    if new_id is not None:
+                        task_map[old_id] = new_id
+
+                for row in self._snapshot_table_rows(source, "record_workflows"):
+                    old_id = int(row["id"])
+                    overrides = {
+                        "project_id": new_project_id,
+                        "scanner_id": person_map.get(int(row["scanner_id"]))
+                        if row["scanner_id"] is not None
+                        else None,
+                        "checker_id": person_map.get(int(row["checker_id"]))
+                        if row["checker_id"] is not None
+                        else None,
+                    }
+                    new_id = self._insert_snapshot_row(
+                        target,
+                        "record_workflows",
+                        row,
+                        overrides=overrides,
+                        drop={"id"},
+                    )
+                    if new_id is not None:
+                        workflow_map[old_id] = new_id
+
+                for row in self._snapshot_table_rows(source, "record_paper_statuses"):
+                    old_record = int(row["record_id"])
+                    old_paper = int(row["paper_format_id"])
+                    if old_record not in workflow_map or old_paper not in paper_map:
+                        continue
+                    self._insert_snapshot_row(
+                        target,
+                        "record_paper_statuses",
+                        row,
+                        overrides={
+                            "record_id": workflow_map[old_record],
+                            "paper_format_id": paper_map[old_paper],
+                            "scanner_id": person_map.get(int(row["scanner_id"]))
+                            if row["scanner_id"] is not None
+                            else None,
+                        },
+                        drop={"id"},
+                    )
+
+                for row in self._snapshot_table_rows(source, "record_check_assignments"):
+                    checker = person_map.get(int(row["checker_id"]))
+                    if checker is None:
+                        continue
+                    self._insert_snapshot_row(
+                        target,
+                        "record_check_assignments",
+                        row,
+                        overrides={"project_id": new_project_id, "checker_id": checker},
+                        drop={"id"},
+                    )
+
+                for row in self._snapshot_table_rows(source, "backup_files"):
+                    old_id = int(row["id"])
+                    new_id = self._insert_snapshot_row(
+                        target,
+                        "backup_files",
+                        row,
+                        overrides={"project_id": new_project_id},
+                        drop={"id"},
+                    )
+                    if new_id is not None:
+                        backup_file_map[old_id] = new_id
+
+                for row in self._snapshot_table_rows(source, "backup_file_paper_sizes"):
+                    old_backup = int(row["backup_file_id"])
+                    if old_backup not in backup_file_map:
+                        continue
+                    self._insert_snapshot_row(
+                        target,
+                        "backup_file_paper_sizes",
+                        row,
+                        overrides={"backup_file_id": backup_file_map[old_backup]},
+                    )
+
+                for row in self._snapshot_table_rows(source, "conflicts"):
+                    old_backup = row["backup_file_id"]
+                    overrides = {
+                        "backup_file_id": backup_file_map.get(int(old_backup))
+                        if old_backup is not None
+                        else None
+                    }
+                    self._insert_snapshot_row(
+                        target,
+                        "conflicts",
+                        row,
+                        overrides=overrides,
+                        drop={"id"},
+                    )
+
+                for row in self._snapshot_table_rows(source, "attendance_entries"):
+                    personnel = person_map.get(int(row["personnel_id"]))
+                    if personnel is None:
+                        continue
+                    old_task = row["task_id"]
+                    self._insert_snapshot_row(
+                        target,
+                        "attendance_entries",
+                        row,
+                        overrides={
+                            "project_id": new_project_id,
+                            "task_id": task_map.get(int(old_task))
+                            if old_task is not None
+                            else None,
+                            "personnel_id": personnel,
+                        },
+                        drop={"id"},
+                    )
+
+                for row in self._snapshot_table_rows(source, "backup_jobs"):
+                    self._insert_snapshot_row(
+                        target,
+                        "backup_jobs",
+                        row,
+                        overrides={"project_id": new_project_id},
+                        drop={"id"},
+                    )
+
+                for row in self._snapshot_table_rows(source, "audit_logs"):
+                    self._insert_snapshot_row(
+                        target,
+                        "audit_logs",
+                        row,
+                        overrides={"project_id": new_project_id},
+                        drop={"id"},
+                    )
+
+        self.sync_project_database(int(new_project_id))
+        self.record_audit(
+            "PROJECT_DATABASE_IMPORTED",
+            f"Imported project database from {source_path}",
+            project_id=int(new_project_id),
+        )
+        return int(new_project_id)
 
     # ------------------------------------------------------------------
     # Projects
@@ -1224,7 +1819,7 @@ class Database:
             )
             self._seed_paper_formats(conn, project_id)
             self._seed_job_types(conn, project_id)
-        self.ensure_project_database(project_id)
+        self.sync_project_database(project_id)
         return project_id
 
     def delete_project(self, project_id: int) -> None:
@@ -1629,34 +2224,325 @@ class Database:
             task_kind = (task.task_kind or "").strip().upper()
             if task_kind not in {"", "SCAN", "CHECK"}:
                 raise ValueError("Loại nhiệm vụ phải là SCAN hoặc CHECK.")
+            work_date = normalize_system_date(task.work_date, "Ngay cong") if task.work_date else now[:10]
+            attendance_status = (task.attendance_status or "PENDING").strip().upper()
+            if attendance_status not in ATTENDANCE_STATUSES:
+                raise ValueError("Trạng thái chấm công không hợp lệ.")
             conn.execute(
                 """
                 INSERT INTO project_tasks(
                     project_id, task_code, title, description, assignee_id, due_date,
-                    priority, status, record_key, task_kind, created_at, updated_at
-                ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    priority, status, record_key, task_kind, work_date, started_at,
+                    finished_at, attendance_status, created_at, updated_at
+                ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(project_id, task_code) DO UPDATE SET
                     title=excluded.title, description=excluded.description,
                     assignee_id=excluded.assignee_id, due_date=excluded.due_date,
                     priority=excluded.priority, status=excluded.status,
                     record_key=excluded.record_key, task_kind=excluded.task_kind,
+                    work_date=excluded.work_date, started_at=excluded.started_at,
+                    finished_at=excluded.finished_at,
+                    attendance_status=CASE
+                        WHEN project_tasks.attendance_status='APPROVED'
+                        THEN project_tasks.attendance_status
+                        ELSE excluded.attendance_status
+                    END,
                     updated_at=excluded.updated_at
                 """,
                 (
                     task.project_id, task.task_code.strip().upper(), task.title.strip(),
                     task.description.strip(), task.assignee_id, task.due_date.strip(),
-                    task.priority, task.status, record_key, task_kind, now, now,
+                    task.priority, task.status, record_key, task_kind, work_date,
+                    task.started_at.strip() or now, task.finished_at.strip(),
+                    attendance_status, now, now,
                 ),
             )
             row = conn.execute(
                 "SELECT id FROM project_tasks WHERE project_id=? AND task_code=?",
                 (task.project_id, task.task_code.strip().upper()),
             ).fetchone()
-            return int(row["id"])
+            task_id = int(row["id"])
+            self._sync_attendance_entry_for_task(conn, task_id)
+            return task_id
 
     def delete_task(self, task_id: int) -> None:
         with self.connect() as conn:
             conn.execute("DELETE FROM project_tasks WHERE id=?", (task_id,))
+
+    @staticmethod
+    def _task_attendance_status(task_status: str, attendance_status: str) -> str:
+        if task_status == "CANCELLED":
+            return "VOID"
+        if attendance_status in {"APPROVED", "REJECTED", "VOID"}:
+            return attendance_status
+        return "PENDING"
+
+    def _sync_attendance_entry_for_task(self, conn: sqlite3.Connection, task_id: int) -> None:
+        task = conn.execute(
+            """
+            SELECT * FROM project_tasks WHERE id=?
+            """,
+            (task_id,),
+        ).fetchone()
+        if task is None:
+            return
+        now = utc_now()
+        task_kind = str(task["task_kind"] or "SCAN").strip().upper() or "SCAN"
+        if task_kind not in {"SCAN", "CHECK"}:
+            task_kind = "SCAN"
+        status = self._task_attendance_status(
+            str(task["status"] or ""),
+            str(task["attendance_status"] or "PENDING"),
+        )
+        work_date = str(task["work_date"] or "").strip() or str(task["created_at"])[:10]
+        completed_count = 1 if task["status"] == "COMPLETED" else 0
+        conn.execute(
+            """
+            INSERT INTO attendance_entries(
+                project_id, task_id, record_key, personnel_id, work_date, task_kind,
+                job_title, quantity, completed_count, status, created_at, updated_at
+            ) VALUES(?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?)
+            ON CONFLICT(project_id, task_id) DO UPDATE SET
+                record_key=excluded.record_key,
+                personnel_id=excluded.personnel_id,
+                work_date=excluded.work_date,
+                task_kind=excluded.task_kind,
+                job_title=excluded.job_title,
+                completed_count=excluded.completed_count,
+                status=CASE
+                    WHEN attendance_entries.status='APPROVED'
+                    THEN attendance_entries.status
+                    ELSE excluded.status
+                END,
+                updated_at=excluded.updated_at
+            """,
+            (
+                task["project_id"],
+                task_id,
+                str(task["record_key"] or "").strip(),
+                task["assignee_id"],
+                work_date,
+                task_kind,
+                task["title"],
+                completed_count,
+                status,
+                now,
+                now,
+            ),
+        )
+
+    def ensure_attendance_entries_for_project(self, project_id: int) -> None:
+        """Backfill attendance rows only for tasks that don't have one yet.
+
+        Every task mutation that feeds attendance keeps its entry in sync at
+        write time (``save_task``, ``complete_open_tasks_for_assignee`` and the
+        record rename in ``update_system_record_source``), so this read-path
+        safety net only needs to create rows that are still missing — e.g.
+        tasks migrated in before the attendance table existed. That keeps the
+        statistics/report views cheap instead of re-syncing every task on each
+        read."""
+        with self.connect() as conn:
+            missing = conn.execute(
+                """
+                SELECT t.id FROM project_tasks t
+                LEFT JOIN attendance_entries ae ON ae.task_id=t.id
+                WHERE t.project_id=? AND ae.id IS NULL
+                """,
+                (project_id,),
+            ).fetchall()
+            for row in missing:
+                self._sync_attendance_entry_for_task(conn, int(row["id"]))
+
+    def list_attendance_entries(
+        self,
+        project_id: int,
+        date_from: str,
+        date_to: str,
+        *,
+        statuses: Iterable[str] | None = None,
+    ) -> list[sqlite3.Row]:
+        self.ensure_attendance_entries_for_project(project_id)
+        params: list[Any] = [project_id, date_from, date_to]
+        status_clause = ""
+        if statuses:
+            status_list = [status.strip().upper() for status in statuses]
+            status_clause = f" AND ae.status IN ({', '.join('?' for _ in status_list)})"
+            params.extend(status_list)
+        with self.connect() as conn:
+            return conn.execute(
+                f"""
+                SELECT ae.*, p.personnel_code, p.full_name, t.status AS task_status,
+                    t.task_code, t.started_at, t.finished_at,
+                    COALESCE(rw.record_status, 'NOT_STARTED') AS record_status,
+                    COALESCE(rw.check_pages, 0) AS check_pages,
+                    COALESCE(rw.check_files, 0) AS check_files,
+                    EXISTS(
+                        SELECT 1 FROM backup_files b
+                        WHERE b.project_id=ae.project_id
+                            AND b.record_key=ae.record_key
+                            AND b.file_kind='SCAN'
+                            AND b.status IN ({_COUNTABLE_SQL})
+                    ) AS has_scan_backup
+                FROM attendance_entries ae
+                JOIN project_personnel p ON p.id=ae.personnel_id
+                LEFT JOIN project_tasks t ON t.id=ae.task_id
+                LEFT JOIN record_workflows rw
+                    ON rw.project_id=ae.project_id AND rw.record_key=ae.record_key
+                WHERE ae.project_id=? AND ae.work_date BETWEEN ? AND ?
+                    {status_clause}
+                ORDER BY ae.work_date DESC, p.full_name, ae.id DESC
+                """,
+                params,
+            ).fetchall()
+
+    def _attendance_entry_can_approve(
+        self, conn: sqlite3.Connection, entry: sqlite3.Row, override_reason: str
+    ) -> tuple[bool, str]:
+        if override_reason.strip():
+            return True, ""
+        if int(entry["completed_count"] or 0) <= 0:
+            return False, "Nhiệm vụ chưa được chốt hoàn thành."
+        kind = str(entry["task_kind"] or "SCAN").upper()
+        if kind == "SCAN":
+            has_backup = conn.execute(
+                f"""
+                SELECT 1 FROM backup_files
+                WHERE project_id=? AND record_key=? AND file_kind='SCAN'
+                    AND status IN ({_COUNTABLE_SQL})
+                LIMIT 1
+                """,
+                (entry["project_id"], entry["record_key"]),
+            ).fetchone()
+            if has_backup:
+                return True, ""
+            return False, "Scan chưa có file backup hợp lệ. Nhập lý do override nếu vẫn cần tính công."
+        workflow = conn.execute(
+            """
+            SELECT record_status, check_pages, check_files FROM record_workflows
+            WHERE project_id=? AND record_key=?
+            """,
+            (entry["project_id"], entry["record_key"]),
+        ).fetchone()
+        if (
+            workflow
+            and workflow["record_status"] == "COMPLETED"
+            and (int(workflow["check_pages"] or 0) > 0 or int(workflow["check_files"] or 0) > 0)
+        ):
+            return True, ""
+        return False, "Check chưa có kết quả hợp lệ. Nhập lý do override nếu vẫn cần tính công."
+
+    def approve_attendance_entry(
+        self,
+        entry_id: int,
+        *,
+        approved_by: str = "Leader",
+        quantity: int | None = None,
+        completed_count: int | None = None,
+        override_reason: str = "",
+        notes: str = "",
+    ) -> None:
+        now = utc_now()
+        with self.connect() as conn:
+            entry = conn.execute(
+                "SELECT * FROM attendance_entries WHERE id=?",
+                (entry_id,),
+            ).fetchone()
+            if entry is None:
+                raise ValueError("Không tìm thấy dòng chấm công.")
+            next_quantity = max(0, int(quantity if quantity is not None else entry["quantity"]))
+            next_completed = max(
+                0,
+                int(completed_count if completed_count is not None else entry["completed_count"]),
+            )
+            candidate = dict(entry)
+            candidate["quantity"] = next_quantity
+            candidate["completed_count"] = next_completed
+            ok, message = self._attendance_entry_can_approve(
+                conn,
+                candidate,  # type: ignore[arg-type]
+                override_reason,
+            )
+            if not ok:
+                raise ValueError(message)
+            conn.execute(
+                """
+                UPDATE attendance_entries
+                SET quantity=?, completed_count=?, status='APPROVED',
+                    approved_by=?, approved_at=?, override_reason=?, notes=?,
+                    updated_at=?
+                WHERE id=?
+                """,
+                (
+                    next_quantity,
+                    next_completed,
+                    approved_by.strip() or "Leader",
+                    now,
+                    override_reason.strip(),
+                    notes.strip(),
+                    now,
+                    entry_id,
+                ),
+            )
+            if entry["task_id"] is not None:
+                conn.execute(
+                    """
+                    UPDATE project_tasks
+                    SET attendance_status='APPROVED', updated_at=?
+                    WHERE id=?
+                    """,
+                    (now, entry["task_id"]),
+                )
+            conn.execute(
+                """
+                INSERT INTO audit_logs(project_id, action, message, created_at)
+                VALUES(?, 'ATTENDANCE_APPROVED', ?, ?)
+                """,
+                (
+                    entry["project_id"],
+                    f"Approved attendance #{entry_id} for {entry['record_key']}"
+                    + (f" with override: {override_reason.strip()}" if override_reason.strip() else ""),
+                    now,
+                ),
+            )
+
+    def reject_attendance_entry(
+        self, entry_id: int, *, approved_by: str = "Leader", reason: str = ""
+    ) -> None:
+        if not reason.strip():
+            raise ValueError("Cần nhập lý do khi không tính công.")
+        now = utc_now()
+        with self.connect() as conn:
+            entry = conn.execute(
+                "SELECT * FROM attendance_entries WHERE id=?",
+                (entry_id,),
+            ).fetchone()
+            if entry is None:
+                raise ValueError("Không tìm thấy dòng chấm công.")
+            conn.execute(
+                """
+                UPDATE attendance_entries
+                SET status='REJECTED', approved_by=?, approved_at=?, notes=?,
+                    updated_at=?
+                WHERE id=?
+                """,
+                (approved_by.strip() or "Leader", now, reason.strip(), now, entry_id),
+            )
+            if entry["task_id"] is not None:
+                conn.execute(
+                    """
+                    UPDATE project_tasks
+                    SET attendance_status='REJECTED', updated_at=?
+                    WHERE id=?
+                    """,
+                    (now, entry["task_id"]),
+                )
+            conn.execute(
+                """
+                INSERT INTO audit_logs(project_id, action, message, created_at)
+                VALUES(?, 'ATTENDANCE_REJECTED', ?, ?)
+                """,
+                (entry["project_id"], f"Rejected attendance #{entry_id}: {reason.strip()}", now),
+            )
 
     def complete_open_tasks_for_assignee(
         self, project_id: int, assignee_id: int
@@ -1681,11 +2567,15 @@ class Database:
             conn.execute(
                 f"""
                 UPDATE project_tasks
-                SET status='COMPLETED', updated_at=?
+                SET status='COMPLETED',
+                    finished_at=CASE WHEN finished_at='' THEN ? ELSE finished_at END,
+                    updated_at=?
                 WHERE id IN ({', '.join('?' for _ in task_ids)})
                 """,
-                [now, *task_ids],
+                [now, now, *task_ids],
             )
+            for task_id in task_ids:
+                self._sync_attendance_entry_for_task(conn, task_id)
             completed: list[dict[str, Any]] = []
             seen_keys: set[str] = set()
             for row in rows:
@@ -3309,6 +4199,14 @@ class Database:
                 conn.execute(
                     """
                     UPDATE project_tasks
+                    SET record_key=?, updated_at=?
+                    WHERE project_id=? AND record_key=?
+                    """,
+                    (new_record_key, utc_now(), project_id, old_record_key),
+                )
+                conn.execute(
+                    """
+                    UPDATE attendance_entries
                     SET record_key=?, updated_at=?
                     WHERE project_id=? AND record_key=?
                     """,

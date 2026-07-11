@@ -28,6 +28,7 @@ class BackupJobService:
         self.instance_id = instance_id or f"{socket.gethostname()}-{uuid.uuid4().hex[:8]}"
         self._next_scan: dict[int, datetime] = {}
         self._last_verify_day: dict[int, str] = {}
+        self._last_project_db_sync_day: dict[int, str] = {}
 
     def schedule_due_projects(self) -> None:
         now = datetime.now(timezone.utc)
@@ -43,6 +44,14 @@ class BackupJobService:
             if self._last_verify_day.get(project.id) != verify_day:
                 self.db.enqueue_job(project.id, JOB_VERIFY, deduplicate=True)
                 self._last_verify_day[project.id] = verify_day
+            if self._last_project_db_sync_day.get(project.id) != verify_day:
+                try:
+                    self.db.sync_project_database(project.id)
+                    self._last_project_db_sync_day[project.id] = verify_day
+                except Exception:
+                    get_logger().exception(
+                        "Could not sync project database for project %s", project.id
+                    )
 
     def process_one(self) -> bool:
         job = self.db.claim_next_job(self.instance_id)
@@ -73,12 +82,24 @@ class BackupJobService:
             else:
                 raise ValueError(f"Unsupported job type: {job['job_type']}")
             self.db.finish_job(job_id, status, counters=counters)
+            try:
+                self.db.sync_project_database(project_id)
+            except Exception:
+                get_logger().exception(
+                    "Could not sync project database after job %s", job_id
+                )
         except Exception as exc:
             get_logger().exception("Job %s failed", job_id)
             self.db.finish_job(
                 job_id, "FAILED", error_code=type(exc).__name__,
                 error_detail=traceback.format_exc(),
             )
+            try:
+                self.db.sync_project_database(project_id)
+            except Exception:
+                get_logger().exception(
+                    "Could not sync project database after failed job %s", job_id
+                )
         finally:
             renew_stop.set()
             renewer.join(timeout=1)

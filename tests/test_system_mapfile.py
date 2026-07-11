@@ -16,6 +16,7 @@ from scan_backup_manager.models import (
     Personnel,
     Project,
     ProjectSettings,
+    ProjectTask,
 )
 
 
@@ -281,6 +282,34 @@ def test_system_mapfile_can_edit_manual_record_key(tmp_path: Path) -> None:
     assert records[0]["record_status"] == "SCANNING"
     assert db.list_backup_files_for_record(project_id, "2026/HS/002") == []
     assert len(db.list_backup_files_for_record(project_id, "2026/HS/003")) == 1
+
+
+def test_renaming_record_keeps_attendance_entry_in_sync(tmp_path: Path) -> None:
+    """Renaming a record must carry its attendance entries along, so the read
+    path's lightweight backfill (which no longer re-syncs every task) never
+    leaves a stale record_key behind."""
+    db = Database(tmp_path / "app.sqlite3")
+    project_id = _create_project(db, tmp_path)
+    service = MapfileService(db)
+    service.add_manual_record(project_id, ["2026", "HS", "002"])
+    person_id = db.save_personnel(
+        Personnel(None, project_id, "NV01", "Nguyen Van A", "Scanner")
+    )
+    db.save_task(
+        ProjectTask(
+            None, project_id, "SCAN_S", "Scan A4", "Record", person_id, "",
+            status="COMPLETED", record_key="2026/HS/002", task_kind="SCAN",
+        )
+    )
+    before = db.list_attendance_entries(project_id, "2000-01-01", "2999-12-31")
+    assert [row["record_key"] for row in before] == ["2026/HS/002"]
+
+    service.update_manual_record(project_id, "2026/HS/002", ["2026", "HS", "003"])
+
+    after = db.list_attendance_entries(project_id, "2000-01-01", "2999-12-31")
+    assert [row["record_key"] for row in after] == ["2026/HS/003"]
+    # No orphaned entry left under the old key.
+    assert all(row["record_key"] != "2026/HS/002" for row in after)
 
 
 def test_system_mapfile_can_delete_record_and_related_system_data(tmp_path: Path) -> None:

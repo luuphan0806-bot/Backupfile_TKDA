@@ -23,7 +23,7 @@ def run_worker(
     def _target() -> None:
         try:
             result = func()
-        except Exception:
+        except Exception:  # noqa: BLE001 - top-level worker boundary: log + surface via on_error
             get_logger().exception("Background task failed: %s", func)
             if on_error:
                 on_error(traceback.format_exc())

@@ -249,21 +249,23 @@ class StatisticsService:
     def job_quantity_by_day(
         self, project_id: int, date_from: str, date_to: str
     ) -> list[JobQuantityByDay]:
+        self.db.ensure_attendance_entries_for_project(project_id)
         with self.db.connect() as conn:
             rows = conn.execute(
                 """
                 SELECT
-                    substr(t.created_at, 1, 10) AS day,
-                    t.title AS job_title,
-                    COALESCE(NULLIF(t.task_kind, ''), 'SCAN') AS task_kind,
-                    COUNT(DISTINCT COALESCE(NULLIF(t.record_key, ''), CAST(t.id AS TEXT))) AS quantity,
-                    SUM(CASE WHEN t.status='COMPLETED' THEN 1 ELSE 0 END) AS completed_count,
-                    COUNT(DISTINCT t.assignee_id) AS personnel_count
-                FROM project_tasks t
-                WHERE t.project_id=?
-                    AND substr(t.created_at, 1, 10) BETWEEN ? AND ?
-                GROUP BY day, t.title, task_kind
-                ORDER BY day DESC, task_kind, t.title
+                    ae.work_date AS day,
+                    ae.job_title AS job_title,
+                    ae.task_kind AS task_kind,
+                    SUM(ae.quantity) AS quantity,
+                    SUM(ae.completed_count) AS completed_count,
+                    COUNT(DISTINCT ae.personnel_id) AS personnel_count
+                FROM attendance_entries ae
+                WHERE ae.project_id=?
+                    AND ae.status='APPROVED'
+                    AND ae.work_date BETWEEN ? AND ?
+                GROUP BY day, ae.job_title, ae.task_kind
+                ORDER BY day DESC, task_kind, job_title
                 """,
                 (project_id, date_from, date_to),
             ).fetchall()
@@ -282,26 +284,29 @@ class StatisticsService:
     def personnel_daily_job_details(
         self, project_id: int, date_from: str, date_to: str
     ) -> list[PersonnelDailyJobDetail]:
+        self.db.ensure_attendance_entries_for_project(project_id)
         with self.db.connect() as conn:
             rows = conn.execute(
                 """
                 SELECT
-                    substr(t.created_at, 1, 10) AS day,
+                    ae.work_date AS day,
                     p.personnel_code,
                     p.full_name,
-                    t.title AS job_title,
-                    COALESCE(NULLIF(t.task_kind, ''), 'SCAN') AS task_kind,
-                    COUNT(DISTINCT COALESCE(NULLIF(t.record_key, ''), CAST(t.id AS TEXT))) AS quantity,
-                    SUM(CASE WHEN t.status='COMPLETED' THEN 1 ELSE 0 END) AS completed_count,
-                    MIN(t.created_at) AS started_at,
-                    MAX(t.updated_at) AS last_updated_at,
-                    MIN(t.id) AS first_task_id
-                FROM project_tasks t
-                JOIN project_personnel p ON p.id=t.assignee_id
-                WHERE t.project_id=?
-                    AND substr(t.created_at, 1, 10) BETWEEN ? AND ?
-                GROUP BY day, p.id, t.title, task_kind
-                ORDER BY day DESC, p.full_name, started_at, first_task_id
+                    ae.job_title AS job_title,
+                    ae.task_kind AS task_kind,
+                    SUM(ae.quantity) AS quantity,
+                    SUM(ae.completed_count) AS completed_count,
+                    MIN(COALESCE(NULLIF(t.started_at, ''), ae.created_at)) AS started_at,
+                    MAX(ae.updated_at) AS last_updated_at,
+                    MIN(ae.id) AS first_entry_id
+                FROM attendance_entries ae
+                JOIN project_personnel p ON p.id=ae.personnel_id
+                LEFT JOIN project_tasks t ON t.id=ae.task_id
+                WHERE ae.project_id=?
+                    AND ae.status='APPROVED'
+                    AND ae.work_date BETWEEN ? AND ?
+                GROUP BY day, p.id, ae.job_title, ae.task_kind
+                ORDER BY day DESC, p.full_name, started_at, first_entry_id
                 """,
                 (project_id, date_from, date_to),
             ).fetchall()

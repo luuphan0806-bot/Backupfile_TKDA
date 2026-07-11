@@ -10,3 +10,9 @@ data/
 logs/
 .env
 Backup_TKDA/
+
+# Runtime junk that Flet/PyInstaller-bundled exes and third-party tooling drop
+# into the working directory (e.g. an unexpanded %PROGRAMDATA% path or NVIDIA
+# App logs). Not produced by this app's own code.
+%PROGRAMDATA%/
+NVIDIA Corporation/

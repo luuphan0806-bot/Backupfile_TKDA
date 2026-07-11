@@ -856,7 +856,7 @@ def build(ctx) -> ft.Control:
                     ctx.backup.backup_check_record(ctx.project_id, previous["record_key"])
                 else:
                     ctx.backup.backup_record(ctx.project_id, previous["record_key"])
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001 - per-record resilience: audit and continue
                 ctx.db.record_audit(
                     "ASSIGNMENT_PREVIOUS_BACKUP_ERROR",
                     str(exc),
@@ -989,6 +989,7 @@ def build(ctx) -> ft.Control:
                         "",
                         record_key=record_key,
                         task_kind=kind.upper(),
+                        work_date=work_date_display,
                     )
                 )
                 ctx.db.save_record_assignment(
@@ -1485,6 +1486,7 @@ def build(ctx) -> ft.Control:
                                 "",
                                 record_key=record_key,
                                 task_kind="CHECK",
+                                work_date=work_date_display,
                             )
                         )
                         ctx.db.save_record_assignment(
@@ -1543,6 +1545,7 @@ def build(ctx) -> ft.Control:
                                 "",
                                 record_key=record_key,
                                 task_kind="SCAN",
+                                work_date=work_date_display,
                             )
                         )
                         ctx.db.save_record_assignment(

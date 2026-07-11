@@ -1,0 +1,69 @@
+flowchart TD
+    %% =========================================================
+    %% 03. Leader Workbench & chốt công
+    %% Mục tiêu: tách hoàn thành tác nghiệp khỏi công được duyệt.
+    %% =========================================================
+
+    START([Mở dự án]) --> LEADER_WORKBENCH[Tab Leader Workbench]
+    LEADER_WORKBENCH --> FILTER_WORK_DATE[Chọn ngày công]
+    FILTER_WORK_DATE --> LOAD_LEDGER[list_attendance_entries theo ngày]
+    LOAD_LEDGER --> LEDGER_TABLE[Bảng công: nhân sự, loại việc, hồ sơ, sản lượng, task_status, record_status, nghiệm thu]
+
+    LEDGER_TABLE --> ROW_STATUS{Trạng thái dòng công}
+    ROW_STATUS -->|PENDING| CHECK_RULE[Dòng chờ Leader duyệt]
+    ROW_STATUS -->|APPROVED| ALREADY_APPROVED[Đã lên bảng công chính thức]
+    ROW_STATUS -->|REJECTED / VOID| NOT_COUNTED[Không tính công]
+
+    CHECK_RULE --> TASK_DONE{Task đã COMPLETED?}
+    TASK_DONE -->|Không| BLOCK_NOT_DONE[Chưa duyệt được: tác nghiệp chưa chốt]
+    BLOCK_NOT_DONE --> WAIT_MORE[Chờ nhân sự/Leader hoàn tất việc hoặc chốt task]
+
+    TASK_DONE -->|Có| KIND{Loại công việc}
+
+    KIND -->|SCAN| SCAN_RULE{Có backup hợp lệ cho record_key?}
+    SCAN_RULE -->|Có| APPROVE_SCAN[Leader duyệt công Scan]
+    SCAN_RULE -->|Không| SCAN_OVERRIDE{Leader chấp nhận override?}
+    SCAN_OVERRIDE -->|Không| REJECT_SCAN[Không tính công Scan, nhập lý do]
+    SCAN_OVERRIDE -->|Có| OVERRIDE_SCAN[Nhập lý do override bắt buộc]
+
+    KIND -->|CHECK| CHECK_RULE_OK{record_status COMPLETED và có check_pages/check_files?}
+    CHECK_RULE_OK -->|Có| APPROVE_CHECK[Leader duyệt công Check]
+    CHECK_RULE_OK -->|Không| CHECK_OVERRIDE{Leader chấp nhận override?}
+    CHECK_OVERRIDE -->|Không| REJECT_CHECK[Không tính công Check, nhập lý do]
+    CHECK_OVERRIDE -->|Có| OVERRIDE_CHECK[Nhập lý do override bắt buộc]
+
+    APPROVE_SCAN --> UPDATE_APPROVED[(attendance_entries: APPROVED)]
+    APPROVE_CHECK --> UPDATE_APPROVED
+    OVERRIDE_SCAN --> UPDATE_APPROVED_OVERRIDE[(attendance_entries: APPROVED + override_reason)]
+    OVERRIDE_CHECK --> UPDATE_APPROVED_OVERRIDE
+
+    REJECT_SCAN --> UPDATE_REJECTED[(attendance_entries: REJECTED + notes)]
+    REJECT_CHECK --> UPDATE_REJECTED
+
+    UPDATE_APPROVED --> UPDATE_TASK_APPROVED[project_tasks.attendance_status = APPROVED]
+    UPDATE_APPROVED_OVERRIDE --> UPDATE_TASK_APPROVED
+    UPDATE_REJECTED --> UPDATE_TASK_REJECTED[project_tasks.attendance_status = REJECTED]
+
+    UPDATE_TASK_APPROVED --> AUDIT_APPROVED[audit_logs: ATTENDANCE_APPROVED]
+    UPDATE_TASK_REJECTED --> AUDIT_REJECTED[audit_logs: ATTENDANCE_REJECTED]
+
+    AUDIT_APPROVED --> REFRESH_WORKBENCH[Refresh Leader Workbench]
+    AUDIT_REJECTED --> REFRESH_WORKBENCH
+    REFRESH_WORKBENCH --> KPI
+
+    KPI[KPI ngày công] --> KPI_PENDING[Số dòng chờ duyệt]
+    KPI --> KPI_READY[Số dòng đủ điều kiện]
+    KPI --> KPI_APPROVED[Số dòng đã duyệt]
+    KPI --> KPI_REJECTED[Số dòng không tính công]
+
+    KPI_APPROVED --> STATISTICS_READY([Dữ liệu APPROVED sẵn sàng cho thống kê/chấm công])
+
+    %% -------------------------
+    %% Duyệt hàng loạt
+    %% -------------------------
+    LEDGER_TABLE --> BULK_APPROVE{Leader bấm duyệt dòng đủ điều kiện?}
+    BULK_APPROVE -->|Có| FILTER_READY[Chỉ lấy PENDING + đủ rule nghiệm thu]
+    FILTER_READY --> BULK_APPROVED[Cập nhật hàng loạt sang APPROVED]
+    BULK_APPROVED --> AUDIT_APPROVED
+    BULK_APPROVE -->|Không| MANUAL_ACTION[Leader xử lý từng dòng]
+    MANUAL_ACTION --> CHECK_RULE

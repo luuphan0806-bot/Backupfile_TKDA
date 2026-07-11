@@ -159,6 +159,12 @@ def test_service_processes_durable_scan_job(tmp_path: Path) -> None:
 
     job = next(row for row in db.list_jobs(project_id) if row["id"] == job_id)
     assert job["status"] == "SUCCEEDED"
+    with sqlite3.connect(db.project_database_path("PROJECT_ALPHA")) as conn:
+        assert conn.execute("SELECT COUNT(*) FROM backup_jobs").fetchone()[0] >= 1
+        assert conn.execute("SELECT COUNT(*) FROM backup_files").fetchone()[0] >= 1
+        assert conn.execute(
+            "SELECT value FROM project_sync_status WHERE key='last_synced_at'"
+        ).fetchone() is not None
 
 
 def test_integrity_verification_no_longer_needs_source(tmp_path: Path) -> None:
