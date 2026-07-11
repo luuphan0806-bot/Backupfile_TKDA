@@ -4,8 +4,10 @@ from datetime import datetime
 from pathlib import Path
 from typing import Iterable
 
+from datetime import date
+
 from openpyxl import Workbook
-from openpyxl.styles import Font, PatternFill
+from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.worksheet.worksheet import Worksheet
 
 from .db import Database
@@ -431,3 +433,138 @@ class ReportService:
             project_id=project_id,
         )
         return output
+
+    def export_mausham_cong(
+        self, project_id: int, date_from: str, date_to: str, output_dir: Path | None = None
+    ) -> Path:
+        """Export the official timesheet in the MauChamCong.xlsx layout: one
+        sheet per work day, each person a 4-row block (4 job slots) with code,
+        name, hours, attendance type, job content and output volume.
+
+        Only APPROVED attendance counts — the leader signs off in the Workbench
+        first."""
+        project = self.db.get_project(project_id)
+        if not project:
+            raise ValueError(f"Project not found: {project_id}")
+        output_dir = output_dir or Path(project.reports_dir)
+        output_dir.mkdir(parents=True, exist_ok=True)
+
+        entries = self.db.list_attendance_entries(
+            project_id, date_from, date_to, statuses=["APPROVED"]
+        )
+        by_date: dict[str, dict[int, list]] = {}
+        person_name: dict[int, tuple[str, str]] = {}
+        for row in entries:
+            person_name[row["personnel_id"]] = (row["personnel_code"], row["full_name"])
+            by_date.setdefault(row["work_date"], {}).setdefault(row["personnel_id"], []).append(row)
+
+        workbook = Workbook()
+        workbook.remove(workbook.active)
+        if not by_date:
+            _build_mausham_sheet(workbook.create_sheet(date_from[:31]), date_from, {}, person_name)
+        else:
+            for work_date in sorted(by_date):
+                _build_mausham_sheet(
+                    workbook.create_sheet(work_date[:31]), work_date, by_date[work_date], person_name
+                )
+
+        output = (
+            output_dir
+            / f"MauChamCong_{date_from}_{date_to}_{datetime.now():%Y%m%d_%H%M%S}.xlsx"
+        )
+        workbook.save(output)
+        self.db.record_audit(
+            "MAUSHAMCONG_EXPORTED",
+            f"Exported MauChamCong timesheet to {output}",
+            project_id=project_id,
+        )
+        return output
+
+
+_WEEKDAYS_VI = ["Thứ Hai", "Thứ Ba", "Thứ Tư", "Thứ Năm", "Thứ Sáu", "Thứ Bảy", "Chủ Nhật"]
+_MAUSHAM_HEADERS = [
+    "Mã NV",
+    "Họ Và Tên",
+    "Số lượng công việc thực hiện trong ngày",
+    "Thời gian thực hiện từng mục công việc",
+    "Loại Chấm Công/Năng Suất",
+    "Nội dung công việc",
+    "Khối lượng hoàn thành",
+]
+_MAUSHAM_JOB_SLOTS = 4
+_THIN = Side(style="thin", color="B7C4D6")
+_BORDER = Border(left=_THIN, right=_THIN, top=_THIN, bottom=_THIN)
+
+
+def _weekday_vi(work_date: str) -> str:
+    try:
+        return _WEEKDAYS_VI[date.fromisoformat(work_date).weekday()]
+    except (ValueError, TypeError):
+        return ""
+
+
+def _display_date(work_date: str) -> str:
+    try:
+        return date.fromisoformat(work_date).strftime("%d/%m/%Y")
+    except (ValueError, TypeError):
+        return work_date
+
+
+def _build_mausham_sheet(
+    sheet: Worksheet,
+    work_date: str,
+    people: dict[int, list],
+    person_name: dict[int, tuple[str, str]],
+) -> None:
+    center = Alignment(horizontal="center", vertical="center", wrap_text=True)
+    left = Alignment(horizontal="left", vertical="center", wrap_text=True)
+
+    # Title band: A1:C2 = personnel info, D1:G1 = date, D2:G2 = weekday.
+    sheet.merge_cells("A1:C2")
+    sheet["A1"] = "Thông tin nhân sự"
+    sheet["A1"].font = Font(bold=True)
+    sheet["A1"].alignment = center
+    sheet.merge_cells("D1:G1")
+    sheet["D1"] = _display_date(work_date)
+    sheet["D1"].font = Font(bold=True)
+    sheet["D1"].alignment = center
+    sheet.merge_cells("D2:G2")
+    sheet["D2"] = _weekday_vi(work_date)
+    sheet["D2"].alignment = center
+
+    for col, title in enumerate(_MAUSHAM_HEADERS, start=1):
+        cell = sheet.cell(row=3, column=col, value=title)
+        cell.font = Font(bold=True)
+        cell.fill = PatternFill("solid", fgColor="D9EAF7")
+        cell.alignment = center
+        cell.border = _BORDER
+
+    widths = [12, 26, 16, 14, 20, 26, 16]
+    for idx, width in enumerate(widths, start=1):
+        sheet.column_dimensions[chr(64 + idx)].width = width
+
+    row = 4
+    for personnel_id in sorted(people, key=lambda pid: person_name.get(pid, ("", ""))[1]):
+        jobs = people[personnel_id]
+        code, name = person_name.get(personnel_id, ("", ""))
+        top, bottom = row, row + _MAUSHAM_JOB_SLOTS - 1
+        sheet.merge_cells(f"A{top}:A{bottom}")
+        sheet.merge_cells(f"B{top}:B{bottom}")
+        sheet[f"A{top}"] = code
+        sheet[f"A{top}"].alignment = center
+        sheet[f"B{top}"] = name
+        sheet[f"B{top}"].alignment = left
+        for slot in range(_MAUSHAM_JOB_SLOTS):
+            r = top + slot
+            sheet.cell(row=r, column=3, value=f"Công việc {slot + 1}").alignment = left
+            job = jobs[slot] if slot < len(jobs) else None
+            if job is not None:
+                hours = job["work_hours"] or 0
+                sheet.cell(row=r, column=4, value=hours if hours else None).alignment = center
+                sheet.cell(row=r, column=5, value=job["attendance_type"] or None).alignment = center
+                sheet.cell(row=r, column=6, value=job["job_content"] or job["job_title"]).alignment = left
+                sheet.cell(row=r, column=7, value=job["quantity"]).alignment = center
+            for col in range(1, 8):
+                sheet.cell(row=r, column=col).border = _BORDER
+        row = bottom + 1
+

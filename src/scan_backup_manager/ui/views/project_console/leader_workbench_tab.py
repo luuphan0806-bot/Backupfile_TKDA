@@ -5,8 +5,18 @@ from datetime import date
 import flet as ft
 
 from ... import kit
+from ....db import ATTENDANCE_TYPES
 from ...date_format import DISPLAY_DATE_HINT, display_to_iso, iso_to_display
 from ...theme import DANGER, SUCCESS, TEXT_MUTED, WARNING
+
+
+def _hours_text(row) -> str:
+    hours = row["work_hours"] or 0
+    if hours:
+        return f"{hours:g}h"
+    if row["start_time"]:
+        return f"{row['start_time']}–{row['finish_time']}"
+    return ""
 
 
 def _kind_label(kind: str) -> str:
@@ -174,11 +184,91 @@ def build(ctx) -> ft.Control:
             )
         )
 
+    def open_details(row) -> None:
+        current_type = (row["attendance_type"] or "").upper()
+        type_dd = ft.Dropdown(
+            label="Loại chấm công",
+            width=200,
+            value=current_type,
+            options=[ft.dropdown.Option(key="", text="(chưa chọn)")]
+            + [ft.dropdown.Option(key=value, text=value) for value in ATTENDANCE_TYPES],
+        )
+        start = ft.TextField(label="Giờ nhận việc (HH:MM)", value=row["start_time"] or "07:30", width=170)
+        finish = ft.TextField(label="Giờ hoàn thành (HH:MM)", value=row["finish_time"] or "17:30", width=170)
+        suggested = ctx.db.suggested_attendance_quantity(
+            ctx.project_id, row["record_key"], row["task_kind"]
+        )
+        default_qty = row["quantity"] if int(row["quantity"] or 0) > 1 else (suggested or row["quantity"])
+        quantity = ft.TextField(label="Sản lượng (khối lượng)", value=str(default_qty), width=180)
+        content = ft.TextField(
+            label="Nội dung công việc", value=row["job_content"] or row["job_title"], width=430,
+        )
+        error = ft.Text("", color=DANGER)
+        hint = ft.Text(
+            f"Gợi ý sản lượng theo số trang: {suggested}" if suggested
+            else "Chưa có số trang để gợi ý.",
+            size=11, color=TEXT_MUTED,
+        )
+
+        def use_suggested(_event=None) -> None:
+            quantity.value = str(suggested)
+            ctx.page.update()
+
+        def submit(_event=None) -> None:
+            try:
+                ctx.db.set_attendance_details(
+                    int(row["id"]),
+                    attendance_type=type_dd.value or "",
+                    start_time=start.value or "",
+                    finish_time=finish.value or "",
+                    quantity=int(quantity.value or 0),
+                    job_content=content.value or "",
+                )
+            except (ValueError, TypeError) as exc:
+                error.value = str(exc)
+                ctx.page.update()
+                return
+            ctx.page.pop_dialog()
+            state["message"] = f"Đã lưu chi tiết chấm công #{row['id']}."
+            ctx.refresh()
+
+        ctx.page.open(
+            kit.dialog(
+                f"Chi tiết chấm công #{row['id']}",
+                ft.Column(
+                    tight=True,
+                    spacing=10,
+                    controls=[
+                        ft.Text(row["record_key"], color=TEXT_MUTED),
+                        ft.Row([type_dd, start, finish], spacing=8, wrap=True),
+                        ft.Row([quantity, kit.ghost_button("Dùng gợi ý", on_click=use_suggested)], spacing=8),
+                        hint,
+                        content,
+                        error,
+                    ],
+                ),
+                [
+                    kit.ghost_button("Hủy", on_click=lambda _e: ctx.page.pop_dialog()),
+                    kit.primary_button("Lưu chi tiết", on_click=submit),
+                ],
+                width=560,
+            )
+        )
+
     def row_cells(row) -> list[ft.DataCell]:
         ready_text, ready_color = _ready_label(row)
         actions: list[ft.Control] = []
+        if row["status"] in {"PENDING", "APPROVED"}:
+            actions.append(
+                ft.IconButton(
+                    icon=ft.Icons.TUNE,
+                    tooltip="Chi tiết chấm công (loại CC, giờ, sản lượng)",
+                    icon_color=ft.Colors.PRIMARY,
+                    on_click=lambda _e, item=row: open_details(item),
+                )
+            )
         if row["status"] == "PENDING":
-            actions = [
+            actions += [
                 ft.IconButton(
                     icon=ft.Icons.CHECK_CIRCLE_OUTLINE,
                     tooltip="Duyệt nếu đủ điều kiện",
@@ -202,9 +292,11 @@ def build(ctx) -> ft.Control:
             ft.DataCell(ft.Text(str(row["id"]))),
             ft.DataCell(ft.Text(row["full_name"], max_lines=1)),
             ft.DataCell(ft.Text(_kind_label(row["task_kind"]))),
-            ft.DataCell(ft.Text(row["job_title"], max_lines=1)),
+            ft.DataCell(ft.Text(row["job_content"] or row["job_title"], max_lines=1)),
             ft.DataCell(ft.Text(row["record_key"], max_lines=1)),
             ft.DataCell(ft.Text(str(row["quantity"]))),
+            ft.DataCell(ft.Text(row["attendance_type"] or "—")),
+            ft.DataCell(ft.Text(_hours_text(row) or "—")),
             ft.DataCell(ft.Text(str(row["completed_count"]))),
             ft.DataCell(kit.badge(row["status"], _attendance_color(row["status"]))),
             ft.DataCell(kit.badge(ready_text, ready_color)),
@@ -219,6 +311,8 @@ def build(ctx) -> ft.Control:
             ft.DataColumn(ft.Text("Công việc")),
             ft.DataColumn(ft.Text("Hồ sơ")),
             ft.DataColumn(ft.Text("SL")),
+            ft.DataColumn(ft.Text("Loại CC")),
+            ft.DataColumn(ft.Text("Giờ")),
             ft.DataColumn(ft.Text("Chốt")),
             ft.DataColumn(ft.Text("Công")),
             ft.DataColumn(ft.Text("Nghiệm thu")),

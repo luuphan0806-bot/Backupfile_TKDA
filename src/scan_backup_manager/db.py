@@ -31,8 +31,13 @@ from .models import (
 )
 
 
-SCHEMA_VERSION = 7
+SCHEMA_VERSION = 8
 DEFAULT_ADMIN_PASSWORD = "Admin@123"
+# Attendance ledger tuning (MauChamCong export).
+ATTENDANCE_TYPES = ("CC", "CC.OT", "NS", "NS.OT")
+MAX_JOBS_PER_PERSON_PER_DAY = 4
+WORK_DAY_START = "07:30"
+WORK_DAY_END = "17:30"
 PBKDF2_ITERATIONS = 600_000
 
 DEFAULT_SETTINGS_KEYS = {
@@ -185,6 +190,7 @@ class Database:
             self._migrate_to_v5(conn)
             self._migrate_to_v6(conn, current_version)
             self._migrate_to_v7(conn)
+            self._migrate_to_v8(conn)
             conn.execute(
                 """
                 CREATE INDEX IF NOT EXISTS idx_backup_project_record
@@ -344,6 +350,11 @@ class Database:
                 approved_at TEXT NOT NULL DEFAULT '',
                 override_reason TEXT NOT NULL DEFAULT '',
                 notes TEXT NOT NULL DEFAULT '',
+                attendance_type TEXT NOT NULL DEFAULT '',
+                start_time TEXT NOT NULL DEFAULT '',
+                finish_time TEXT NOT NULL DEFAULT '',
+                work_hours REAL NOT NULL DEFAULT 0,
+                job_content TEXT NOT NULL DEFAULT '',
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL,
                 FOREIGN KEY(project_id) REFERENCES projects(id) ON DELETE CASCADE,
@@ -969,6 +980,25 @@ class Database:
             FROM project_tasks
             """
         )
+
+    def _migrate_to_v8(self, conn: sqlite3.Connection) -> None:
+        """Attendance ledger fields for the MauChamCong export: work times,
+        computed hours, the leader-chosen attendance type, and a job-content
+        override. Idempotent additive ALTERs."""
+        columns = {
+            row[1]
+            for row in conn.execute("PRAGMA table_info(attendance_entries)").fetchall()
+        }
+        additions = {
+            "attendance_type": "TEXT NOT NULL DEFAULT ''",
+            "start_time": "TEXT NOT NULL DEFAULT ''",
+            "finish_time": "TEXT NOT NULL DEFAULT ''",
+            "work_hours": "REAL NOT NULL DEFAULT 0",
+            "job_content": "TEXT NOT NULL DEFAULT ''",
+        }
+        for name, decl in additions.items():
+            if name not in columns:
+                conn.execute(f"ALTER TABLE attendance_entries ADD COLUMN {name} {decl}")
 
     @staticmethod
     def _migrate_v6_record_statuses(conn: sqlite3.Connection) -> None:
@@ -2228,6 +2258,34 @@ class Database:
             attendance_status = (task.attendance_status or "PENDING").strip().upper()
             if attendance_status not in ATTENDANCE_STATUSES:
                 raise ValueError("Trạng thái chấm công không hợp lệ.")
+            # Hard cap: each person may hold at most 4 different jobs on one work
+            # day (matches the 4 job slots of the MauChamCong template). Only
+            # blocks brand-new tasks; editing an existing task is always allowed.
+            task_code = task.task_code.strip().upper()
+            is_new = conn.execute(
+                "SELECT 1 FROM project_tasks WHERE project_id=? AND task_code=?",
+                (task.project_id, task_code),
+            ).fetchone() is None
+            if is_new:
+                active_jobs = conn.execute(
+                    """
+                    SELECT COUNT(*) AS n FROM project_tasks
+                    WHERE project_id=? AND assignee_id=? AND work_date=?
+                        AND status!='CANCELLED'
+                    """,
+                    (task.project_id, task.assignee_id, work_date),
+                ).fetchone()["n"]
+                limit_row = conn.execute(
+                    "SELECT value FROM settings WHERE key='max_jobs_per_person_per_day'"
+                ).fetchone()
+                try:
+                    limit = int(limit_row["value"]) if limit_row else MAX_JOBS_PER_PERSON_PER_DAY
+                except (ValueError, TypeError):
+                    limit = MAX_JOBS_PER_PERSON_PER_DAY
+                if limit > 0 and active_jobs >= limit:
+                    raise ValueError(
+                        f"Mỗi nhân sự chỉ được giao tối đa {limit} công việc trong một ngày."
+                    )
             conn.execute(
                 """
                 INSERT INTO project_tasks(
@@ -2542,6 +2600,140 @@ class Database:
                 VALUES(?, 'ATTENDANCE_REJECTED', ?, ?)
                 """,
                 (entry["project_id"], f"Rejected attendance #{entry_id}: {reason.strip()}", now),
+            )
+
+    @staticmethod
+    def _hhmm_to_minutes(value: str) -> int | None:
+        value = (value or "").strip()
+        if not value:
+            return None
+        try:
+            hours, minutes = value.split(":", 1)
+            total = int(hours) * 60 + int(minutes)
+        except (ValueError, TypeError):
+            return None
+        return total if 0 <= total <= 24 * 60 else None
+
+    @classmethod
+    def _validate_hhmm(cls, value: str, field_name: str) -> str:
+        value = (value or "").strip()
+        if value and cls._hhmm_to_minutes(value) is None:
+            raise ValueError(f"{field_name} phải đúng định dạng HH:MM.")
+        return value
+
+    @classmethod
+    def work_hours_between(cls, start_time: str, finish_time: str) -> float:
+        """Whole/half hours between a start and finish clock time (HH:MM).
+        Returns 0 when either end is missing or the range is non-positive."""
+        start = cls._hhmm_to_minutes(start_time)
+        finish = cls._hhmm_to_minutes(finish_time)
+        if start is None or finish is None or finish <= start:
+            return 0.0
+        return round((finish - start) / 60.0, 2)
+
+    def suggested_attendance_quantity(
+        self, project_id: int, record_key: str, task_kind: str
+    ) -> int:
+        """Best-effort output volume (MauChamCong "Khối lượng hoàn thành") so the
+        leader doesn't hand-count: SCAN = total scanned pages of the record's
+        backup, CHECK = checked pages/files recorded on the workflow. Returns 0
+        when nothing is available yet."""
+        key = (record_key or "").strip().replace("\\", "/").strip("/")
+        if not key:
+            return 0
+        kind = (task_kind or "SCAN").strip().upper()
+        with self.connect() as conn:
+            if kind == "CHECK":
+                row = conn.execute(
+                    "SELECT check_pages, check_files FROM record_workflows "
+                    "WHERE project_id=? AND record_key=?",
+                    (project_id, key),
+                ).fetchone()
+                if not row:
+                    return 0
+                return int(row["check_pages"] or 0) or int(row["check_files"] or 0)
+            row = conn.execute(
+                f"""
+                SELECT COALESCE(SUM(ps.page_count), 0) AS pages,
+                       COUNT(DISTINCT b.id) AS files
+                FROM backup_files b
+                LEFT JOIN backup_file_paper_sizes ps ON ps.backup_file_id=b.id
+                WHERE b.project_id=? AND b.record_key=? AND b.file_kind='SCAN'
+                    AND b.status IN ({_COUNTABLE_SQL})
+                """,
+                (project_id, key),
+            ).fetchone()
+            return int(row["pages"] or 0) or int(row["files"] or 0)
+
+    def set_attendance_details(
+        self,
+        entry_id: int,
+        *,
+        attendance_type: str | None = None,
+        start_time: str | None = None,
+        finish_time: str | None = None,
+        work_hours: float | None = None,
+        job_content: str | None = None,
+        quantity: int | None = None,
+    ) -> None:
+        """Set the MauChamCong fields on one attendance row. ``work_hours`` is
+        derived from the times when both are given and not explicitly passed."""
+        with self.connect() as conn:
+            entry = conn.execute(
+                "SELECT * FROM attendance_entries WHERE id=?", (entry_id,)
+            ).fetchone()
+            if entry is None:
+                raise ValueError("Không tìm thấy dòng chấm công.")
+            next_type = (
+                entry["attendance_type"]
+                if attendance_type is None
+                else attendance_type.strip().upper()
+            )
+            if next_type and next_type not in ATTENDANCE_TYPES:
+                raise ValueError(
+                    "Loại chấm công phải thuộc: " + ", ".join(ATTENDANCE_TYPES)
+                )
+            next_start = (
+                entry["start_time"]
+                if start_time is None
+                else self._validate_hhmm(start_time, "Giờ bắt đầu")
+            )
+            next_finish = (
+                entry["finish_time"]
+                if finish_time is None
+                else self._validate_hhmm(finish_time, "Giờ kết thúc")
+            )
+            if work_hours is not None:
+                next_hours = float(work_hours)
+                if next_hours < 0:
+                    raise ValueError("Số giờ công không được âm.")
+            elif start_time is not None or finish_time is not None:
+                next_hours = self.work_hours_between(next_start, next_finish)
+            else:
+                next_hours = float(entry["work_hours"] or 0)
+            next_content = (
+                entry["job_content"] if job_content is None else job_content.strip()
+            )
+            next_quantity = (
+                int(entry["quantity"]) if quantity is None else max(0, int(quantity))
+            )
+            conn.execute(
+                """
+                UPDATE attendance_entries
+                SET attendance_type=?, start_time=?, finish_time=?, work_hours=?,
+                    job_content=?, quantity=?, updated_at=?
+                WHERE id=?
+                """,
+                (
+                    next_type,
+                    next_start,
+                    next_finish,
+                    next_hours,
+                    next_content,
+                    next_quantity,
+                    utc_now(),
+                    entry_id,
+                ),
             )
 
     def complete_open_tasks_for_assignee(

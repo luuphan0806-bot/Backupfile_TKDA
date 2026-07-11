@@ -121,6 +121,11 @@ class AttendanceEntry:
     approved_at: str = ""
     override_reason: str = ""
     notes: str = ""
+    attendance_type: str = ""
+    start_time: str = ""
+    finish_time: str = ""
+    work_hours: float = 0.0
+    job_content: str = ""
 
 
 @dataclass(slots=True)

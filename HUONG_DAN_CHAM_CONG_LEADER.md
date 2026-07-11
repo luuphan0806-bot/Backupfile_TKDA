@@ -42,15 +42,26 @@ Mở **Bảng điều hành dự án → Leader Workbench**. Chọn **Ngày côn
 - **SCAN**: đủ điều kiện khi task đã chốt hoàn thành **và** hồ sơ đã có **file backup hợp lệ**.
 - **CHECK**: đủ điều kiện khi hồ sơ có workflow ở trạng thái **COMPLETED** và có **số trang/số file check** > 0.
 
-### 3 hành động của Leader
+### Các hành động của Leader
 
-1. **Duyệt** (biểu tượng ✓): chỉ thành công khi dòng **đủ điều kiện**. Ghi nhận sản lượng vào thống kê.
-2. **Duyệt override** (biểu tượng ghi chú): dùng khi cần tính công dù **chưa đủ điều kiện tự động** (ví dụ file nguồn hợp lệ nhưng chưa backup kịp). **Bắt buộc nhập lý do**; có thể chỉnh **sản lượng tính công** và **số đã chốt**.
-3. **Không tính công** (biểu tượng chặn): loại dòng khỏi bảng công. **Bắt buộc nhập lý do**.
+1. **Chi tiết chấm công** (biểu tượng ⚙, có ở dòng PENDING và APPROVED): nhập **Loại chấm công** (CC / CC.OT / NS / NS.OT), **Giờ nhận việc** và **Giờ báo cáo hoàn thành** (khung 7:30–17:30; sau 17:30 chọn hậu tố `.OT`), **Sản lượng** và **Nội dung công việc**. Đây là dữ liệu để xuất **mẫu MauChamCong**.
+   - Ô sản lượng có nút **"Dùng gợi ý"**: hệ thống tự tính khối lượng theo **số trang** (SCAN = tổng trang đã backup; CHECK = số trang check), khỏi phải đếm tay.
+2. **Duyệt** (biểu tượng ✓): chỉ thành công khi dòng **đủ điều kiện**. Ghi nhận sản lượng vào thống kê.
+3. **Duyệt override** (biểu tượng ghi chú): dùng khi cần tính công dù **chưa đủ điều kiện tự động** (ví dụ file nguồn hợp lệ nhưng chưa backup kịp). **Bắt buộc nhập lý do**; có thể chỉnh **sản lượng tính công** và **số đã chốt**.
+4. **Không tính công** (biểu tượng chặn): loại dòng khỏi bảng công. **Bắt buộc nhập lý do**.
 
 Nút **Duyệt dòng đủ điều kiện** ở đầu trang duyệt hàng loạt tất cả dòng đang ở trạng thái "Đủ điều kiện".
 
+> Quy trình đề xuất: **Chi tiết chấm công** (nhập loại CC + giờ + sản lượng) → **Duyệt** → sang tab **Thống kê** bấm **Xuất mẫu chấm công**.
+>
 > Mọi thao tác Duyệt / Override / Không tính công đều được **ghi audit** và hiển thị trong sheet `Audit chinh sua` của báo cáo.
+
+### Giới hạn số việc mỗi ngày
+Mặc định mỗi nhân sự tối đa **4 công việc khác nhau/ngày** (đúng 4 ô của mẫu MauChamCong). Có thể chỉnh trong **Cấu hình hệ thống → Giá trị mặc định → "Số việc tối đa/nhân sự/ngày"** (đặt **0** để bỏ giới hạn).
+
+## 3b. Xuất mẫu MauChamCong
+
+Tab **Thống kê** có nút **"Xuất mẫu chấm công"** → sinh file `MauChamCong_<từ>_<đến>_*.xlsx` đúng mẫu: 1 sheet/ngày, mỗi nhân sự một khối 4 dòng, 7 cột (Mã NV · Họ tên · Công việc 1–4 · **Giờ** · **Loại CC** · Nội dung · Khối lượng). Chỉ tính **công đã duyệt**; các cột Giờ/Loại CC lấy từ bước **Chi tiết chấm công** ở trên.
 
 ## 4. Báo cáo chấm công (5 sheet)
 

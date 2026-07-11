@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 import flet as ft
 
 from .. import kit
@@ -73,6 +75,37 @@ def _open_create_project_dialog(shell) -> None:
         ],
     )
     shell.page.show_dialog(dialog)
+
+
+def _open_import_project_database(shell) -> None:
+    picker = ft.FilePicker()
+    if picker not in shell.page.services:
+        shell.page.services.append(picker)
+
+    async def pick_file(_event=None) -> None:
+        result = await picker.pick_files(
+            dialog_title="Chọn file SQLite dự án",
+            allow_multiple=False,
+            allowed_extensions=["sqlite3", "sqlite", "db"],
+        )
+        if not result or not result.files:
+            return
+        try:
+            project_id = shell.db.import_project_database(Path(result.files[0].path))
+        except ValueError as exc:
+            shell.page.open(
+                kit.dialog(
+                    "Không load được dự án",
+                    ft.Text(str(exc), color=ft.Colors.ERROR),
+                    [ft.FilledButton("Đóng", on_click=lambda _e: shell.page.pop_dialog())],
+                    icon=ft.Icons.ERROR_OUTLINE,
+                    width=520,
+                )
+            )
+            return
+        shell.open_project(project_id)
+
+    shell.page.run_task(pick_file)
 
 
 def _open_delete_project_dialog(shell, project: Project) -> None:
@@ -183,6 +216,10 @@ def build(shell) -> ft.Control:
                     kit.primary_button(
                         "Tạo dự án mới", icon=ft.Icons.ADD,
                         on_click=lambda _e: _open_create_project_dialog(shell),
+                    ),
+                    kit.ghost_button(
+                        "Load dự án từ DB", icon=ft.Icons.UPLOAD_FILE,
+                        on_click=lambda _e: _open_import_project_database(shell),
                     ),
                 ],
             ),

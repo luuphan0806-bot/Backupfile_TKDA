@@ -3,11 +3,8 @@ name = "scan-backup-manager"
 version = "0.1.0"
 description = "Windows server-side scan backup manager for SMB workstations."
 readme = "README.md"
-# 3.12 is the recommended build/runtime target (see README). The upper bound
-# keeps packaging (flet pack + PyInstaller) on interpreters validated with
-# flet 0.85.3; bump it only after re-verifying a packaged EXE on the new
-# version.
-requires-python = ">=3.11,<3.14"
+# 3.12 is the recommended packaging target for the Flet EXE.
+requires-python = ">=3.11"
 dependencies = [
     "openpyxl>=3.1.5",
     "pypdf>=5.0",

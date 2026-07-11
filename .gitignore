@@ -16,3 +16,7 @@ Backup_TKDA/
 # App logs). Not produced by this app's own code.
 %PROGRAMDATA%/
 NVIDIA Corporation/
+
+# Excel lock/temp files created while a workbook is open.
+~$*.xlsx
+~$*.xls

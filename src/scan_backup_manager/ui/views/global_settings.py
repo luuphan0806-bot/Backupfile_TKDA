@@ -44,19 +44,25 @@ def build(shell) -> ft.Control:
         label="Mặc định yêu cầu tên file PDF là số",
         value=settings.get("default_numeric_sequence_check", "0") == "1",
     )
+    max_jobs_field = ft.TextField(
+        label="Số việc tối đa/nhân sự/ngày (0 = không giới hạn)",
+        value=settings.get("max_jobs_per_person_per_day", "4"), width=320,
+    )
     defaults_error = ft.Text("", color=ft.Colors.ERROR)
 
     def save_defaults(_event) -> None:
         try:
             poll = max(int(poll_field.value or "300"), 30)
             stability = max(int(stability_field.value or "20"), 0)
+            max_jobs = max(int(max_jobs_field.value or "4"), 0)
         except ValueError:
-            defaults_error.value = "Chu kỳ quét và thời gian chờ phải là số."
+            defaults_error.value = "Chu kỳ quét, thời gian chờ và số việc/ngày phải là số."
             shell.page.update()
             return
         db.set_setting("default_poll_interval_seconds", str(poll))
         db.set_setting("default_stability_wait_seconds", str(stability))
         db.set_setting("default_numeric_sequence_check", "1" if numeric_checkbox.value else "0")
+        db.set_setting("max_jobs_per_person_per_day", str(max_jobs))
         defaults_error.value = "Đã lưu."
         defaults_error.color = ft.Colors.PRIMARY
         shell.page.update()
@@ -69,6 +75,7 @@ def build(shell) -> ft.Control:
             controls=[
                 ft.Row(controls=[poll_field, stability_field]),
                 numeric_checkbox,
+                max_jobs_field,
                 defaults_error,
                 kit.primary_button("Lưu giá trị mặc định", on_click=save_defaults),
             ],

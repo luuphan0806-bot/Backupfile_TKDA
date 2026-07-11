@@ -322,6 +322,41 @@ def build(ctx) -> ft.Control:
             on_error=on_error,
         )
 
+    def export_mausham(_event=None) -> None:
+        try:
+            date_from = display_to_iso(date_from_field.value or iso_to_display(default_from))
+            date_to = display_to_iso(date_to_field.value or iso_to_display(default_to))
+        except ValueError as exc:
+            status_text.value = str(exc)
+            status_text.color = ft.Colors.ERROR
+            ctx.page.update()
+            return
+        if date_from > date_to:
+            status_text.value = "Từ ngày không được lớn hơn Đến ngày."
+            status_text.color = ft.Colors.ERROR
+            ctx.page.update()
+            return
+        status_text.value = "Đang xuất mẫu chấm công..."
+        status_text.color = ft.Colors.PRIMARY
+        ctx.page.update()
+
+        def on_success(path) -> None:
+            status_text.value = f"Đã xuất mẫu chấm công: {path}"
+            status_text.color = SUCCESS
+            ctx.page.update()
+
+        def on_error(message: str) -> None:
+            status_text.value = message.splitlines()[-1] if message else "Không thể xuất mẫu chấm công."
+            status_text.color = ft.Colors.ERROR
+            ctx.page.update()
+
+        run_worker(
+            ctx.page,
+            lambda: ctx.reports.export_mausham_cong(project_id, date_from, date_to),
+            on_success=on_success,
+            on_error=on_error,
+        )
+
     date_from_field.on_submit = apply_range
     date_to_field.on_submit = apply_range
 
@@ -335,6 +370,7 @@ def build(ctx) -> ft.Control:
                 date_to_field,
                 kit.primary_button("Xem thống kê", icon=ft.Icons.QUERY_STATS, on_click=apply_range),
                 kit.ghost_button("Xuất chấm công", icon=ft.Icons.FILE_DOWNLOAD, on_click=export_attendance),
+                kit.ghost_button("Xuất mẫu chấm công", icon=ft.Icons.TABLE_VIEW, on_click=export_mausham),
                 status_text,
             ],
         ),
