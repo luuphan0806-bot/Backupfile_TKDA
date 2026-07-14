@@ -1,12 +1,15 @@
-from datetime import date
+from datetime import date, datetime
 from pathlib import Path
 
 import pytest
 from openpyxl import load_workbook
 
-from scan_backup_manager.db import MAX_JOBS_PER_PERSON_PER_DAY, Database
+from scan_backup_manager.db import ATTENDANCE_TYPES, MAX_JOBS_PER_PERSON_PER_DAY, Database
 from scan_backup_manager.models import JobType, Personnel, Project, ProjectTask
 from scan_backup_manager.reports import ReportService
+
+
+TEMPLATE_PATH = Path(__file__).resolve().parents[1] / "MauChamCong.xlsx"
 
 
 def _project_person(db: Database, tmp_path: Path) -> tuple[int, int]:
@@ -131,21 +134,34 @@ def test_export_mausham_cong_matches_template_layout(tmp_path: Path) -> None:
         db.approve_attendance_entry(int(entry["id"]), override_reason="test")
 
     out = ReportService(db).export_mausham_cong(pid, day, day, tmp_path / "out")
-    ws = load_workbook(out)[day]
+    workbook = load_workbook(out)
+    ws = workbook[day]
+    template = load_workbook(TEMPLATE_PATH).active
 
     merged = {str(m) for m in ws.merged_cells.ranges}
-    assert {"A1:C2", "D1:G1", "D2:G2", "A4:A7", "B4:B7", "A8:A11", "B8:B11"} <= merged
-    assert ws["A3"].value == "Mã NV"
-    assert ws["B3"].value == "Họ Và Tên"
-    assert ws["E3"].value == "Loại Chấm Công/Năng Suất"
-    assert ws["G3"].value == "Khối lượng hoàn thành"
-    assert ws["A4"].value == "NV002"
-    assert ws["A8"].value == "NV001"
+    assert workbook.sheetnames == [day]
+    assert merged == {"A1:C2", "D1:G1", "D2:G2", "A4:A7", "A8:A11"}
+    assert [ws.cell(3, column).value for column in range(1, 8)] == [
+        template.cell(3, column).value for column in range(1, 8)
+    ]
+    assert ws.max_column == 7
+    assert ws["A3"].value == "STT"
+    assert ws["A4"].value == 1
+    assert ws["A8"].value == 2
+    assert ws["B4"].value == "Lê Bảo Trân"
+    assert ws["B5"].value is None
+    assert ws["B8"].value == "Nguyễn Thị Thương"
+    assert "NV001" not in {cell.value for row in ws.iter_rows() for cell in row}
     assert ws["C4"].value == "Công việc 1"
     assert ws["C7"].value == "Công việc 4"
     assert ws["D4"].value == 7  # 07:30–15:30 = 8h span − 1h lunch
     assert ws["E4"].value == "CC"
     assert ws["G4"].value == 201
+    assert isinstance(ws["D1"].value, datetime)
+    assert ws["D1"].value.date() == date.fromisoformat(day)
+    assert ws["D1"].number_format == template["D1"].number_format
+    for column in "ABCDEFG":
+        assert ws.column_dimensions[column].width == template.column_dimensions[column].width
 
 
 def test_export_mausham_cong_empty_range_still_produces_sheet(tmp_path: Path) -> None:
@@ -155,7 +171,34 @@ def test_export_mausham_cong_empty_range_still_produces_sheet(tmp_path: Path) ->
         pid, "2030-01-01", "2030-01-01", tmp_path / "out"
     )
     ws = load_workbook(out)["2030-01-01"]
-    assert ws["A3"].value == "Mã NV"
+    assert ws["A3"].value == "STT"
+    assert ws.max_row == 3
+    assert ws.max_column == 7
+    assert ws["D1"].value == datetime(2030, 1, 1)
+
+
+def test_export_mausham_preserves_official_attendance_type_names(tmp_path: Path) -> None:
+    db = Database(tmp_path / "app.sqlite3")
+    pid, per = _project_person(db, tmp_path)
+    day = date.today().isoformat()
+    for index, attendance_type in enumerate(ATTENDANCE_TYPES, start=1):
+        _task(db, pid, per, f"T{index}", day, title=f"Job {index}")
+    for entry, attendance_type in zip(
+        db.list_attendance_entries(pid, day, day), ATTENDANCE_TYPES, strict=True
+    ):
+        db.set_attendance_details(
+            int(entry["id"]),
+            attendance_type=attendance_type,
+            work_hours=1,
+            quantity=1,
+        )
+        db.approve_attendance_entry(int(entry["id"]), override_reason="test")
+
+    ws = load_workbook(
+        ReportService(db).export_mausham_cong(pid, day, day, tmp_path / "out")
+    )[day]
+    assert {ws[f"E{row}"].value for row in range(4, 8)} == set(ATTENDANCE_TYPES)
+    assert "APPROVED" not in {cell.value for row in ws.iter_rows() for cell in row}
 
 
 def test_suggested_attendance_quantity_scan_and_check(tmp_path: Path) -> None:

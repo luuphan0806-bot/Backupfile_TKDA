@@ -1,13 +1,13 @@
 from __future__ import annotations
 
-from datetime import datetime
+from copy import copy
+from datetime import date, datetime
 from pathlib import Path
+import sys
 from typing import Iterable
 
-from datetime import date
-
-from openpyxl import Workbook
-from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
+from openpyxl import Workbook, load_workbook
+from openpyxl.styles import Font, PatternFill
 from openpyxl.worksheet.worksheet import Worksheet
 
 from .db import Database
@@ -438,8 +438,8 @@ class ReportService:
         self, project_id: int, date_from: str, date_to: str, output_dir: Path | None = None
     ) -> Path:
         """Export the official timesheet in the MauChamCong.xlsx layout: one
-        sheet per work day, each person a 4-row block (4 job slots) with code,
-        name, hours, attendance type, job content and output volume.
+        sheet per work day, each person a numbered 4-row block (4 job slots)
+        with name, hours, attendance type, job content and output volume.
 
         Only APPROVED attendance counts — the leader signs off in the Workbench
         first."""
@@ -458,15 +458,14 @@ class ReportService:
             person_name[row["personnel_id"]] = (row["personnel_code"], row["full_name"])
             by_date.setdefault(row["work_date"], {}).setdefault(row["personnel_id"], []).append(row)
 
-        workbook = Workbook()
-        workbook.remove(workbook.active)
-        if not by_date:
-            _build_mausham_sheet(workbook.create_sheet(date_from[:31]), date_from, {}, person_name)
-        else:
-            for work_date in sorted(by_date):
-                _build_mausham_sheet(
-                    workbook.create_sheet(work_date[:31]), work_date, by_date[work_date], person_name
-                )
+        work_dates = sorted(by_date) if by_date else [date_from]
+        workbook = _load_mausham_template()
+        template_sheet = workbook.active
+        sheets = [template_sheet]
+        sheets.extend(workbook.copy_worksheet(template_sheet) for _ in work_dates[1:])
+        for sheet, work_date in zip(sheets, work_dates, strict=True):
+            sheet.title = work_date[:31]
+            _build_mausham_sheet(sheet, work_date, by_date.get(work_date, {}), person_name)
 
         output = (
             output_dir
@@ -482,18 +481,18 @@ class ReportService:
 
 
 _WEEKDAYS_VI = ["Thứ Hai", "Thứ Ba", "Thứ Tư", "Thứ Năm", "Thứ Sáu", "Thứ Bảy", "Chủ Nhật"]
-_MAUSHAM_HEADERS = [
-    "Mã NV",
+_MAUSHAM_HEADERS = (
+    "STT",
     "Họ Và Tên",
     "Số lượng công việc thực hiện trong ngày",
     "Thời gian thực hiện từng mục công việc",
     "Loại Chấm Công/Năng Suất",
     "Nội dung công việc",
     "Khối lượng hoàn thành",
-]
+)
 _MAUSHAM_JOB_SLOTS = 4
-_THIN = Side(style="thin", color="B7C4D6")
-_BORDER = Border(left=_THIN, right=_THIN, top=_THIN, bottom=_THIN)
+_MAUSHAM_TEMPLATE_NAME = "MauChamCong.xlsx"
+_MAUSHAM_TITLE_MERGES = {"A1:C2", "D1:G1", "D2:G2"}
 
 
 def _weekday_vi(work_date: str) -> str:
@@ -503,11 +502,37 @@ def _weekday_vi(work_date: str) -> str:
         return ""
 
 
-def _display_date(work_date: str) -> str:
-    try:
-        return date.fromisoformat(work_date).strftime("%d/%m/%Y")
-    except (ValueError, TypeError):
-        return work_date
+def _mausham_template_path() -> Path:
+    candidates: list[Path] = []
+    bundle_dir = getattr(sys, "_MEIPASS", None)
+    if bundle_dir:
+        candidates.append(Path(bundle_dir) / _MAUSHAM_TEMPLATE_NAME)
+    candidates.extend(
+        [
+            Path(__file__).resolve().parents[2] / _MAUSHAM_TEMPLATE_NAME,
+            Path(sys.executable).resolve().parent / _MAUSHAM_TEMPLATE_NAME,
+            Path.cwd() / _MAUSHAM_TEMPLATE_NAME,
+        ]
+    )
+    for candidate in dict.fromkeys(candidates):
+        if candidate.is_file():
+            return candidate
+    searched = ", ".join(str(path) for path in dict.fromkeys(candidates))
+    raise FileNotFoundError(f"Không tìm thấy file mẫu {_MAUSHAM_TEMPLATE_NAME}. Đã kiểm tra: {searched}")
+
+
+def _load_mausham_template():
+    workbook = load_workbook(_mausham_template_path())
+    if len(workbook.worksheets) != 1:
+        raise ValueError(f"{_MAUSHAM_TEMPLATE_NAME} phải có đúng một sheet mẫu.")
+    sheet = workbook.active
+    headers = tuple(sheet.cell(row=3, column=column).value for column in range(1, 8))
+    merges = {str(merged) for merged in sheet.merged_cells.ranges}
+    if headers != _MAUSHAM_HEADERS or not _MAUSHAM_TITLE_MERGES.issubset(merges):
+        raise ValueError(f"{_MAUSHAM_TEMPLATE_NAME} không đúng cấu trúc biểu mẫu chấm công.")
+    if sheet.max_column != len(_MAUSHAM_HEADERS):
+        raise ValueError(f"{_MAUSHAM_TEMPLATE_NAME} chỉ được có 7 cột từ A đến G.")
+    return workbook
 
 
 def _build_mausham_sheet(
@@ -516,56 +541,66 @@ def _build_mausham_sheet(
     people: dict[int, list],
     person_name: dict[int, tuple[str, str]],
 ) -> None:
-    center = Alignment(horizontal="center", vertical="center", wrap_text=True)
-    left = Alignment(horizontal="left", vertical="center", wrap_text=True)
+    try:
+        parsed_date = date.fromisoformat(work_date)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"Ngày chấm công không hợp lệ: {work_date}") from exc
 
-    # Title band: A1:C2 = personnel info, D1:G1 = date, D2:G2 = weekday.
-    sheet.merge_cells("A1:C2")
-    sheet["A1"] = "Thông tin nhân sự"
-    sheet["A1"].font = Font(bold=True)
-    sheet["A1"].alignment = center
-    sheet.merge_cells("D1:G1")
-    sheet["D1"] = _display_date(work_date)
-    sheet["D1"].font = Font(bold=True)
-    sheet["D1"].alignment = center
-    sheet.merge_cells("D2:G2")
+    body_styles = {
+        "index": copy(sheet["A4"]._style),
+        "text": copy(sheet["B4"]._style),
+        "job": copy(sheet["C4"]._style),
+        "number": copy(sheet["D4"]._style),
+    }
+    body_row_height = sheet.row_dimensions[4].height or 15
+
+    for merged in list(sheet.merged_cells.ranges):
+        if merged.min_row >= 4:
+            sheet.unmerge_cells(str(merged))
+    if sheet.max_row > 3:
+        sheet.delete_rows(4, sheet.max_row - 3)
+
+    sheet["D1"] = datetime(parsed_date.year, parsed_date.month, parsed_date.day)
     sheet["D2"] = _weekday_vi(work_date)
-    sheet["D2"].alignment = center
-
-    for col, title in enumerate(_MAUSHAM_HEADERS, start=1):
-        cell = sheet.cell(row=3, column=col, value=title)
-        cell.font = Font(bold=True)
-        cell.fill = PatternFill("solid", fgColor="D9EAF7")
-        cell.alignment = center
-        cell.border = _BORDER
-
-    widths = [12, 26, 16, 14, 20, 26, 16]
-    for idx, width in enumerate(widths, start=1):
-        sheet.column_dimensions[chr(64 + idx)].width = width
 
     row = 4
-    for personnel_id in sorted(people, key=lambda pid: person_name.get(pid, ("", ""))[1]):
+    ordered_people = sorted(
+        people,
+        key=lambda personnel_id: (
+            person_name.get(personnel_id, ("", ""))[1].casefold(),
+            person_name.get(personnel_id, ("", ""))[0].casefold(),
+        ),
+    )
+    for sequence, personnel_id in enumerate(ordered_people, start=1):
         jobs = _group_jobs_by_type(people[personnel_id])
-        code, name = person_name.get(personnel_id, ("", ""))
+        _code, name = person_name.get(personnel_id, ("", ""))
         top, bottom = row, row + _MAUSHAM_JOB_SLOTS - 1
-        sheet.merge_cells(f"A{top}:A{bottom}")
-        sheet.merge_cells(f"B{top}:B{bottom}")
-        sheet[f"A{top}"] = code
-        sheet[f"A{top}"].alignment = center
-        sheet[f"B{top}"] = name
-        sheet[f"B{top}"].alignment = left
         for slot in range(_MAUSHAM_JOB_SLOTS):
             r = top + slot
-            sheet.cell(row=r, column=3, value=f"Công việc {slot + 1}").alignment = left
+            sheet.row_dimensions[r].height = body_row_height
+            for column in range(1, 8):
+                cell = sheet.cell(row=r, column=column)
+                cell._style = copy(
+                    body_styles["job"] if column == 3 else body_styles["text"]
+                )
+            sheet.cell(row=r, column=3, value=f"Công việc {slot + 1}")
             job = jobs[slot] if slot < len(jobs) else None
             if job is not None:
                 hours = job["hours"] or 0
-                sheet.cell(row=r, column=4, value=hours if hours else None).alignment = center
-                sheet.cell(row=r, column=5, value=job["attendance_type"] or None).alignment = center
-                sheet.cell(row=r, column=6, value=job["name"]).alignment = left
-                sheet.cell(row=r, column=7, value=job["volume"] or None).alignment = center
-            for col in range(1, 8):
-                sheet.cell(row=r, column=col).border = _BORDER
+                if hours:
+                    sheet.cell(row=r, column=4, value=hours)._style = copy(
+                        body_styles["number"]
+                    )
+                sheet.cell(row=r, column=5, value=job["attendance_type"] or None)
+                sheet.cell(row=r, column=6, value=job["name"])
+                if job["volume"]:
+                    sheet.cell(row=r, column=7, value=job["volume"])._style = copy(
+                        body_styles["number"]
+                    )
+        sheet[f"A{top}"]._style = copy(body_styles["index"])
+        sheet[f"A{top}"] = sequence
+        sheet[f"B{top}"] = name
+        sheet.merge_cells(f"A{top}:A{bottom}")
         row = bottom + 1
 
 

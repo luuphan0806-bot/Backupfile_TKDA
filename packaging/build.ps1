@@ -37,6 +37,7 @@ flet pack main.py -n ScanBackupManager --distpath dist `
     --product-version $appVersion `
     --file-version $fileVersion `
     --company-name "Scan Backup Manager" `
+    --add-data "MauChamCong.xlsx:." `
     -y
 if ($LASTEXITCODE -ne 0) {
     throw "ScanBackupManager build failed with exit code $LASTEXITCODE"
