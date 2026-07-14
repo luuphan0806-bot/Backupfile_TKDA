@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 import os
+from pathlib import Path
 
 import flet as ft
 
+from ... import __version__
 from .. import kit
 from ..theme import TEXT_MUTED
 from ...i18n import SUPPORTED_LANGUAGES
+from ...maintenance import create_database_snapshot, restore_database_snapshot
 
 
 def build(shell) -> ft.Control:
@@ -83,16 +86,103 @@ def build(shell) -> ft.Control:
         icon=ft.Icons.TUNE_OUTLINED,
     )
 
-    backup_status = ft.Text("", color=ft.Colors.PRIMARY)
-
-    def backup_now(_event) -> None:
-        dest_dir = shell.db.db_path.parent / "manual_backups"
-        path = shell.db.export_backup(dest_dir)
-        backup_status.value = f"Đã sao lưu vào: {path}"
-        shell.page.update()
+    backup_status = ft.Text("", color=ft.Colors.PRIMARY, selectable=True)
+    restore_password_field = ft.TextField(
+        label="Mật khẩu admin để restore",
+        password=True,
+        can_reveal_password=True,
+        width=300,
+    )
+    snapshot_button = kit.primary_button("Sao lưu ngay", icon=ft.Icons.SAVE)
+    restore_button = kit.ghost_button("Chọn file restore", icon=ft.Icons.RESTORE)
+    db_path_text = ft.Text(str(shell.db.db_path), size=12, color=TEXT_MUTED, selectable=True)
+    data_dir_text = ft.Text(str(shell.db.db_path.parent), size=12, color=TEXT_MUTED, selectable=True)
+    log_path_text = ft.Text(
+        str(shell.db.db_path.parent / "logs" / "app.log"),
+        size=12,
+        color=TEXT_MUTED,
+        selectable=True,
+    )
 
     def open_db_folder(_event) -> None:
         os.startfile(shell.db.db_path.parent)  # noqa: S606 - desktop admin console, local folder only
+
+    def create_snapshot_now(_event) -> None:
+        snapshot_button.disabled = True
+        backup_status.color = ft.Colors.PRIMARY
+        backup_status.value = "Đang tạo snapshot DB..."
+        shell.page.update()
+        try:
+            path = create_database_snapshot(
+                shell.db.db_path,
+                backup_dir=shell.db.db_path.parent / "db_backups",
+                label="ui",
+            )
+            shell.db.record_audit("DB_SNAPSHOT_CREATED", str(path))
+            backup_status.value = f"Đã tạo snapshot: {path}"
+        except Exception as exc:  # noqa: BLE001 - surface actionable UI error
+            backup_status.color = ft.Colors.ERROR
+            backup_status.value = f"Không thể tạo snapshot DB: {exc}"
+        finally:
+            snapshot_button.disabled = False
+            shell.page.update()
+
+    def open_backup_folder(_event) -> None:
+        folder = shell.db.db_path.parent / "db_backups"
+        folder.mkdir(parents=True, exist_ok=True)
+        os.startfile(folder)  # noqa: S606 - desktop admin console, local folder only
+
+    def restore_from_file(path: Path) -> None:
+        if not shell.db.verify_admin_password(restore_password_field.value or ""):
+            backup_status.color = ft.Colors.ERROR
+            backup_status.value = "Mật khẩu admin không đúng; không restore DB."
+            shell.page.update()
+            return
+        restore_button.disabled = True
+        backup_status.color = ft.Colors.PRIMARY
+        backup_status.value = "Đang restore DB snapshot..."
+        shell.page.update()
+        try:
+            pre_restore = restore_database_snapshot(
+                path,
+                shell.db.db_path,
+                backup_dir=shell.db.db_path.parent / "db_backups",
+            )
+            shell.db.record_audit(
+                "DB_SNAPSHOT_RESTORED",
+                f"restored={path}; pre_restore={pre_restore or ''}",
+            )
+            backup_status.value = (
+                "Đã restore DB. Đang xuất để đăng nhập lại với dữ liệu mới. "
+                f"Pre-restore snapshot: {pre_restore}"
+            )
+            restore_password_field.value = ""
+            shell.show_role_selection()
+        except Exception as exc:  # noqa: BLE001 - surface actionable UI error
+            backup_status.color = ft.Colors.ERROR
+            backup_status.value = f"Không thể restore DB: {exc}"
+        finally:
+            restore_button.disabled = False
+            shell.page.update()
+
+    restore_picker = getattr(shell, "_db_restore_picker", None)
+    if restore_picker is None:
+        restore_picker = ft.FilePicker()
+        shell._db_restore_picker = restore_picker
+    if restore_picker not in shell.page.services:
+        shell.page.services.append(restore_picker)
+
+    async def browse_restore(_event=None) -> None:
+        result = await restore_picker.pick_files(
+            dialog_title="Chọn file CSDL để restore",
+            allow_multiple=False,
+            allowed_extensions=["sqlite3", "db"],
+        )
+        if result:
+            restore_from_file(Path(result[0].path))
+
+    snapshot_button.on_click = create_snapshot_now
+    restore_button.on_click = browse_restore
 
     backup_section = kit.section(
         "Sao lưu / khôi phục CSDL",
@@ -100,11 +190,32 @@ def build(shell) -> ft.Control:
         ft.Column(
             spacing=10,
             controls=[
+                ft.Column(
+                    spacing=4,
+                    controls=[
+                        ft.Text("Runtime data dir", size=11, color=TEXT_MUTED),
+                        data_dir_text,
+                        ft.Text("Central DB", size=11, color=TEXT_MUTED),
+                        db_path_text,
+                        ft.Text("Log file", size=11, color=TEXT_MUTED),
+                        log_path_text,
+                    ],
+                ),
                 ft.Row(
                     controls=[
-                        kit.primary_button("Sao lưu ngay", icon=ft.Icons.SAVE, on_click=backup_now),
+                        snapshot_button,
                         kit.ghost_button("Mở thư mục chứa CSDL", icon=ft.Icons.FOLDER_OPEN, on_click=open_db_folder),
                     ]
+                ),
+                ft.Row(
+                    wrap=True,
+                    spacing=8,
+                    vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                    controls=[
+                        kit.ghost_button("Mở thư mục snapshot", icon=ft.Icons.FOLDER_COPY, on_click=open_backup_folder),
+                        restore_password_field,
+                        restore_button,
+                    ],
                 ),
                 backup_status,
             ],
@@ -134,7 +245,7 @@ def build(shell) -> ft.Control:
     about_section = kit.section(
         "Thông tin ứng dụng",
         "",
-        ft.Text("Scan Backup Manager · phiên bản vận hành nội bộ", size=12, color=TEXT_MUTED),
+        ft.Text(f"Scan Backup Manager · phiên bản {__version__}", size=12, color=TEXT_MUTED),
         icon=ft.Icons.INFO_OUTLINE,
     )
 

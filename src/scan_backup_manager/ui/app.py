@@ -134,7 +134,7 @@ class ScanBackupFletApp:
             ),
             glow_color=ui_theme.primary(),
             padding=48,
-            radius=20,
+            radius=8,
         )
         card.width = 760
         self.set_root(self._auth_screen(card))
@@ -153,7 +153,7 @@ class ScanBackupFletApp:
                     kit.ghost_button("Quay lại", on_click=lambda _e: self.show_role_selection()),
                 ],
             ),
-            padding=48, radius=20,
+            padding=48, radius=8,
         )
         card.width = 560
         self.set_root(self._auth_screen(card))
@@ -199,7 +199,7 @@ class ScanBackupFletApp:
                     ft.TextButton("Quay lại", on_click=lambda _e: self.show_role_selection()),
                 ],
             ),
-            glow_color=ui_theme.primary(), padding=44, radius=20,
+            glow_color=ui_theme.primary(), padding=44, radius=8,
         )
         card.width = 460
         self.set_root(self._auth_screen(card))
@@ -235,7 +235,7 @@ class ScanBackupFletApp:
                     kit.primary_button("Lưu mã PIN", on_click=save, width=220),
                 ],
             ),
-            padding=44, radius=20,
+            padding=44, radius=8,
         )
         card.width = 440
         self.set_root(self._auth_screen(card))
@@ -345,7 +345,7 @@ class ScanBackupFletApp:
                     ft.TextButton("Quay lại", on_click=lambda _e: self.show_role_selection()),
                 ],
             ),
-            glow_color=ui_theme.primary(), padding=44, radius=20,
+            glow_color=ui_theme.primary(), padding=44, radius=8,
         )
         card.width = 460
         self.set_root(self._auth_screen(card))
@@ -379,7 +379,7 @@ class ScanBackupFletApp:
 
         card = kit.card(
             ft.Column(horizontal_alignment=ft.CrossAxisAlignment.CENTER, spacing=14, controls=controls),
-            padding=44, radius=20,
+            padding=44, radius=8,
         )
         card.width = 480
         self.set_root(self._auth_screen(card))

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sys
 import threading
 
 from .constants import runtime_db_path
@@ -53,6 +54,14 @@ def run_console() -> None:
 def run_service_command_line() -> None:
     if win32serviceutil is None or ScanBackupWindowsService is None:
         raise SystemExit("Install pywin32 to manage Windows Service")
+    if len(sys.argv) == 1:
+        # When Windows Service Control Manager starts a frozen EXE there are no
+        # command-line args. pywin32's HandleCommandLine is only for install,
+        # remove, debug, etc.; the service host must attach to SCM explicitly.
+        servicemanager.Initialize()
+        servicemanager.PrepareToHostSingle(ScanBackupWindowsService)
+        servicemanager.StartServiceCtrlDispatcher()
+        return
     win32serviceutil.HandleCommandLine(ScanBackupWindowsService)
 
 

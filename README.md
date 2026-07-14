@@ -149,7 +149,7 @@ scan-backup-service-console
 Hoặc chạy trực tiếp:
 
 ```powershell
-python service_main.py
+python service_main.py console
 ```
 
 Service định kỳ:
@@ -209,6 +209,64 @@ Chạy nhóm test quan trọng:
 ```powershell
 python -m pytest tests\test_project_management.py tests\test_service_core.py tests\test_statistics.py tests\test_system_mapfile.py tests\test_backup.py tests\test_product_pipeline.py -q
 ```
+
+Chạy smoke gate trước khi bàn giao release:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\write_release_manifest.ps1
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\release_smoke.ps1
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\product_readiness_audit.ps1
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\make_release_bundle.ps1
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\verify_release_bundle.ps1 -BundlePath dist\release\ScanBackupManager-release-YYYYMMDD-HHMMSS.zip
+```
+
+Smoke gate này kiểm tra health/recovery, UI composition first-run và toàn bộ 6 tab project console, action snapshot trong Settings/recovery, app/service source, app/service EXE, installer artifact, manifest SHA256 và một pipeline local tạo PDF thật rồi xác nhận hồ sơ đủ điều kiện Check. Kết quả được lưu tại `dist\release-smoke-report.json`. Manifest ghi thêm version, commit Git, trạng thái worktree và metadata Windows của từng artifact để truy ngược bản build. Readiness audit gom các bằng chứng này vào `dist\product-readiness-report.json`.
+Lệnh bundle tạo ZIP bàn giao trong `dist\release\` kèm manifest SHA256 của chính file ZIP và các script hardening/release cần để audit lại. Lệnh verify mở ZIP trong thư mục tạm, kiểm đủ file bắt buộc, kiểm `release-smoke-report.json`, `release-manifest.json`, size và SHA256 của từng artifact trước khi bàn giao. `release-manifest.json` cũng ghi trạng thái Authenticode của EXE/installer để audit chữ ký số.
+Với rollout rộng cho người dùng cuối, bật gate chữ ký số sau khi ký EXE/installer:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\sign_release_artifacts.ps1 -CertificateThumbprint "THUMBPRINT_CHUNG_THU_SO"
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\write_release_manifest.ps1 -RequireSigned
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\product_readiness_audit.ps1 -RequireSigned -RequireAdminService
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\verify_release_bundle.ps1 -BundlePath dist\release\ScanBackupManager-release-YYYYMMDD-HHMMSS.zip -RequireSigned
+```
+
+Nếu dùng file PFX thay vì certificate đã cài trong store:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\sign_release_artifacts.ps1 -PfxPath C:\path\codesign.pfx
+```
+Trên máy triển khai, mở PowerShell bằng quyền Administrator và thêm `-IncludeAdminService` để kiểm tra install/start/stop/remove Windows Service thật:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\release_smoke.ps1 -IncludeAdminService
+```
+
+Nhánh admin-service sẽ cài service tạm với `SCAN_BACKUP_DATA_DIR` riêng, start service qua Windows Service Control Manager, kiểm service tạo DB/log thật, rồi stop/remove service nếu không yêu cầu giữ lại.
+
+## Hardening và recovery
+
+Chạy health check trên data dir sạch trước khi bàn giao:
+
+```powershell
+$env:SCAN_BACKUP_DATA_DIR="$PWD\data\release-smoke"
+python scripts\product_hardening_check.py health
+```
+
+Tạo snapshot DB nhất quán bằng SQLite backup API:
+
+```powershell
+python scripts\product_hardening_check.py snapshot --label before-release
+```
+
+Restore snapshot khi cần rollback:
+
+```powershell
+python scripts\product_hardening_check.py restore "duong_dan_snapshot.sqlite3"
+```
+
+Xem checklist release, smoke app/service/EXE và quy tắc go/no-go trong [VAN_HANH_PRODUCT.md](VAN_HANH_PRODUCT.md).
+Trong UI, vào `Cấu hình / Cài đặt` -> `Sao lưu / khôi phục CSDL` để xem runtime data dir, DB, log, tạo snapshot và restore snapshot có xác thực mật khẩu admin.
 
 ## Ghi chú vận hành
 

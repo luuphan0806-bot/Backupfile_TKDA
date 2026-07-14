@@ -47,7 +47,7 @@ def build(shell) -> ft.Control:
         bgcolor=ft.Colors.with_opacity(0.10, banner_color),
         border_color=ft.Colors.with_opacity(0.35, banner_color),
         padding=14,
-        radius=12,
+        radius=8,
     )
 
     kpi_row = ft.Row(
@@ -91,7 +91,7 @@ def build(shell) -> ft.Control:
                     ),
                 ],
             ),
-            padding=14, radius=12,
+            padding=14, radius=8,
         )
 
     if projects:

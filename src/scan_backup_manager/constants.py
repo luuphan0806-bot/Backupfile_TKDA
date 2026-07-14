@@ -26,7 +26,12 @@ def runtime_db_path() -> Path:
     target = runtime_data_dir() / "scan_backup_manager.sqlite3"
     target.parent.mkdir(parents=True, exist_ok=True)
     legacy = DEFAULT_DB_PATH
-    if not target.exists() and legacy.exists() and target.resolve() != legacy.resolve():
+    if (
+        not os.environ.get("SCAN_BACKUP_DATA_DIR")
+        and not target.exists()
+        and legacy.exists()
+        and target.resolve() != legacy.resolve()
+    ):
         shutil.copy2(legacy, target)
     return target
 

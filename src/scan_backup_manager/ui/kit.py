@@ -101,7 +101,7 @@ def card(
     *,
     glow_color: str | None = None,
     padding: int = 20,
-    radius: int = 14,
+    radius: int = 8,
     bgcolor: str | None = None,
     border_color: str | None = None,
     expand: bool | int | None = None,
@@ -179,7 +179,7 @@ def stat_tile(title: str, value, color: str, *, icon=None) -> ft.Control:
     return ft.Container(
         expand=True,
         padding=18,
-        border_radius=14,
+        border_radius=8,
         bgcolor=ft.Colors.with_opacity(0.10, color),
         border=ft.Border.all(1, ft.Colors.with_opacity(0.35, color)),
         shadow=glow(color, blur=18, opacity=0.12, y=6),
@@ -226,7 +226,7 @@ def tab_bar(items, selected_index: int, on_select) -> ft.Control:
             )
     return ft.Container(
         padding=8,
-        border_radius=12,
+        border_radius=8,
         bgcolor=ft.Colors.with_opacity(0.07, theme.primary()),
         border=ft.Border.all(1, theme.line()),
         content=ft.Row(spacing=8, wrap=True, controls=buttons),
@@ -267,7 +267,7 @@ def dialog(
         modal=True,
         bgcolor=theme.surface_high(),
         shape=ft.RoundedRectangleBorder(
-            radius=16,
+            radius=8,
             side=ft.BorderSide(1, theme.line_strong()),
         ),
         shadow_color=ft.Colors.with_opacity(0.35, theme.primary()),
@@ -292,7 +292,7 @@ def table_frame(table: ft.Control) -> ft.Control:
         content=theme.scrollable_table(table),
         padding=6,
         bgcolor=theme.surface(),
-        border_radius=14,
+        border_radius=8,
         border=ft.Border.all(1, theme.line()),
         clip_behavior=ft.ClipBehavior.HARD_EDGE,
     )

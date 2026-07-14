@@ -31,7 +31,7 @@ from .models import (
 )
 
 
-SCHEMA_VERSION = 8
+SCHEMA_VERSION = 9
 DEFAULT_ADMIN_PASSWORD = "Admin@123"
 # Attendance ledger tuning (MauChamCong export).
 ATTENDANCE_TYPES = ("CC", "CC.OT", "NS", "NS.OT")
@@ -191,6 +191,7 @@ class Database:
             self._migrate_to_v6(conn, current_version)
             self._migrate_to_v7(conn)
             self._migrate_to_v8(conn)
+            self._migrate_to_v9(conn)
             conn.execute(
                 """
                 CREATE INDEX IF NOT EXISTS idx_backup_project_record
@@ -387,6 +388,7 @@ class Database:
                     CHECK(job_kind IN ('SCAN', 'CHECK')),
                 enabled INTEGER NOT NULL DEFAULT 1,
                 sort_order INTEGER NOT NULL DEFAULT 0,
+                off_app INTEGER NOT NULL DEFAULT 0,
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL,
                 FOREIGN KEY(project_id) REFERENCES projects(id) ON DELETE CASCADE,
@@ -999,6 +1001,18 @@ class Database:
         for name, decl in additions.items():
             if name not in columns:
                 conn.execute(f"ALTER TABLE attendance_entries ADD COLUMN {name} {decl}")
+
+    def _migrate_to_v9(self, conn: sqlite3.Connection) -> None:
+        """Flag job types that are not performed through the app: no automatic
+        output volume, productivity not measured. Idempotent additive ALTER."""
+        columns = {
+            row[1]
+            for row in conn.execute("PRAGMA table_info(project_job_types)").fetchall()
+        }
+        if "off_app" not in columns:
+            conn.execute(
+                "ALTER TABLE project_job_types ADD COLUMN off_app INTEGER NOT NULL DEFAULT 0"
+            )
 
     @staticmethod
     def _migrate_v6_record_statuses(conn: sqlite3.Connection) -> None:
@@ -2180,6 +2194,7 @@ class Database:
                 bool(row["enabled"]),
                 int(row["sort_order"]),
                 str(row["job_kind"] or "SCAN"),
+                bool(row["off_app"]) if "off_app" in row.keys() else False,
             )
             for row in rows
         ]
@@ -2200,13 +2215,14 @@ class Database:
                 """
                 INSERT INTO project_job_types(
                     project_id, job_code, display_name, job_kind, enabled,
-                    sort_order, created_at, updated_at
-                ) VALUES(?, ?, ?, ?, ?, ?, ?, ?)
+                    sort_order, off_app, created_at, updated_at
+                ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(project_id, job_code) DO UPDATE SET
                     display_name=excluded.display_name,
                     job_kind=excluded.job_kind,
                     enabled=excluded.enabled,
                     sort_order=excluded.sort_order,
+                    off_app=excluded.off_app,
                     updated_at=excluded.updated_at
                 """,
                 (
@@ -2216,6 +2232,7 @@ class Database:
                     job_kind,
                     int(job_type.enabled),
                     max(0, int(job_type.sort_order)),
+                    int(bool(job_type.off_app)),
                     now,
                     now,
                 ),
@@ -2258,23 +2275,30 @@ class Database:
             attendance_status = (task.attendance_status or "PENDING").strip().upper()
             if attendance_status not in ATTENDANCE_STATUSES:
                 raise ValueError("Trạng thái chấm công không hợp lệ.")
-            # Hard cap: each person may hold at most 4 different jobs on one work
-            # day (matches the 4 job slots of the MauChamCong template). Only
-            # blocks brand-new tasks; editing an existing task is always allowed.
+            # Hard cap: each person may work at most 4 *different* job types on
+            # one work day (matches the 4 job slots of the MauChamCong template).
+            # Repeats of the same job type are unlimited — many records of one
+            # job roll into a single timesheet slot. Only blocks brand-new tasks
+            # that introduce a new job type; editing an existing task, or adding
+            # another record of a job type already assigned that day, is allowed.
             task_code = task.task_code.strip().upper()
             is_new = conn.execute(
                 "SELECT 1 FROM project_tasks WHERE project_id=? AND task_code=?",
                 (task.project_id, task_code),
             ).fetchone() is None
             if is_new:
-                active_jobs = conn.execute(
-                    """
-                    SELECT COUNT(*) AS n FROM project_tasks
-                    WHERE project_id=? AND assignee_id=? AND work_date=?
-                        AND status!='CANCELLED'
-                    """,
-                    (task.project_id, task.assignee_id, work_date),
-                ).fetchone()["n"]
+                new_title = task.title.strip()
+                existing_titles = {
+                    str(row["title"] or "").strip()
+                    for row in conn.execute(
+                        """
+                        SELECT DISTINCT title FROM project_tasks
+                        WHERE project_id=? AND assignee_id=? AND work_date=?
+                            AND status!='CANCELLED'
+                        """,
+                        (task.project_id, task.assignee_id, work_date),
+                    ).fetchall()
+                }
                 limit_row = conn.execute(
                     "SELECT value FROM settings WHERE key='max_jobs_per_person_per_day'"
                 ).fetchone()
@@ -2282,9 +2306,11 @@ class Database:
                     limit = int(limit_row["value"]) if limit_row else MAX_JOBS_PER_PERSON_PER_DAY
                 except (ValueError, TypeError):
                     limit = MAX_JOBS_PER_PERSON_PER_DAY
-                if limit > 0 and active_jobs >= limit:
+                introduces_new_type = new_title not in existing_titles
+                if limit > 0 and introduces_new_type and len(existing_titles) >= limit:
                     raise ValueError(
-                        f"Mỗi nhân sự chỉ được giao tối đa {limit} công việc trong một ngày."
+                        f"Mỗi nhân sự chỉ được làm tối đa {limit} loại công việc khác nhau "
+                        "trong một ngày (việc giống nhau không giới hạn)."
                     )
             conn.execute(
                 """
@@ -2460,6 +2486,19 @@ class Database:
             return True, ""
         if int(entry["completed_count"] or 0) <= 0:
             return False, "Nhiệm vụ chưa được chốt hoàn thành."
+        off_app_names = {
+            str(row["display_name"] or "").strip().casefold()
+            for row in conn.execute(
+                "SELECT display_name FROM project_job_types WHERE project_id=? AND off_app=1",
+                (entry["project_id"],),
+            ).fetchall()
+        }
+        entry_names = {
+            str(entry[field] or "").strip().casefold()
+            for field in ("job_title", "job_content")
+        }
+        if any(name in off_app_names for name in entry_names if name):
+            return True, ""
         kind = str(entry["task_kind"] or "SCAN").upper()
         if kind == "SCAN":
             has_backup = conn.execute(
@@ -2609,10 +2648,15 @@ class Database:
             return None
         try:
             hours, minutes = value.split(":", 1)
-            total = int(hours) * 60 + int(minutes)
+            hour_value = int(hours)
+            minute_value = int(minutes)
         except (ValueError, TypeError):
             return None
-        return total if 0 <= total <= 24 * 60 else None
+        if hour_value == 24 and minute_value == 0:
+            return 24 * 60
+        if not (0 <= hour_value <= 23 and 0 <= minute_value <= 59):
+            return None
+        return hour_value * 60 + minute_value
 
     @classmethod
     def _validate_hhmm(cls, value: str, field_name: str) -> str:
@@ -2621,15 +2665,27 @@ class Database:
             raise ValueError(f"{field_name} phải đúng định dạng HH:MM.")
         return value
 
+    # Unpaid lunch break subtracted from any shift that spans it.
+    LUNCH_START_MIN = 12 * 60
+    LUNCH_END_MIN = 13 * 60
+
     @classmethod
     def work_hours_between(cls, start_time: str, finish_time: str) -> float:
-        """Whole/half hours between a start and finish clock time (HH:MM).
-        Returns 0 when either end is missing or the range is non-positive."""
+        """Paid hours between a start and finish clock time (HH:MM), with the
+        12:00–13:00 lunch break removed for the portion that falls inside the
+        shift. Returns 0 when either end is missing or the range is
+        non-positive."""
         start = cls._hhmm_to_minutes(start_time)
         finish = cls._hhmm_to_minutes(finish_time)
         if start is None or finish is None or finish <= start:
             return 0.0
-        return round((finish - start) / 60.0, 2)
+        worked = finish - start
+        lunch_overlap = max(
+            0,
+            min(finish, cls.LUNCH_END_MIN) - max(start, cls.LUNCH_START_MIN),
+        )
+        worked -= lunch_overlap
+        return round(max(0, worked) / 60.0, 2)
 
     def suggested_attendance_quantity(
         self, project_id: int, record_key: str, task_kind: str
@@ -2784,6 +2840,120 @@ class Database:
                     {"task_id": int(row["id"]), "record_key": record_key, "kind": kind}
                 )
             return completed
+
+    def list_open_tasks_for_assignee(
+        self, project_id: int, assignee_id: int
+    ) -> list[dict[str, Any]]:
+        """Open (NEW/IN_PROGRESS) tasks a person still holds.
+
+        Drives the "one active task per person" gate and the create-job
+        dialog's display of the previous assignment: a person may only be
+        given new work once every open task here has been completed."""
+        with self.connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT id, task_code, title, description, record_key, task_kind,
+                    work_date, status, started_at
+                FROM project_tasks
+                WHERE project_id=? AND assignee_id=? AND status IN ('NEW', 'IN_PROGRESS')
+                ORDER BY id
+                """,
+                (project_id, assignee_id),
+            ).fetchall()
+        result: list[dict[str, Any]] = []
+        for row in rows:
+            record_key = str(row["record_key"] or "").strip()
+            if not record_key:
+                record_key = record_key_from_task_description(row["description"])
+            kind = str(row["task_kind"] or "").strip().upper()
+            if not kind:
+                kind = "CHECK" if "check" in str(row["title"] or "").lower() else "SCAN"
+            result.append(
+                {
+                    "task_id": int(row["id"]),
+                    "task_code": row["task_code"],
+                    "title": row["title"],
+                    "record_key": record_key,
+                    "kind": kind,
+                    "work_date": row["work_date"],
+                    "status": row["status"],
+                }
+            )
+        return result
+
+    def complete_task(self, project_id: int, task_id: int) -> dict[str, Any]:
+        """Mark a single open task COMPLETED and return
+        ``{"task_id", "record_key", "kind"}`` so the caller can drive the
+        backup. Single-task counterpart of
+        :meth:`complete_open_tasks_for_assignee`."""
+        with self.connect() as conn:
+            row = conn.execute(
+                """
+                SELECT id, title, description, record_key, task_kind, status
+                FROM project_tasks WHERE id=? AND project_id=?
+                """,
+                (task_id, project_id),
+            ).fetchone()
+            if row is None:
+                raise ValueError("Không tìm thấy công việc.")
+            if row["status"] not in ("NEW", "IN_PROGRESS"):
+                raise ValueError("Công việc này không ở trạng thái đang mở.")
+            now = utc_now()
+            conn.execute(
+                """
+                UPDATE project_tasks
+                SET status='COMPLETED',
+                    finished_at=CASE WHEN finished_at='' THEN ? ELSE finished_at END,
+                    updated_at=?
+                WHERE id=?
+                """,
+                (now, now, task_id),
+            )
+            self._sync_attendance_entry_for_task(conn, task_id)
+            record_key = str(row["record_key"] or "").strip()
+            if not record_key:
+                record_key = record_key_from_task_description(row["description"])
+            kind = str(row["task_kind"] or "").strip().upper()
+            if not kind:
+                kind = "CHECK" if "check" in str(row["title"] or "").lower() else "SCAN"
+        return {"task_id": task_id, "record_key": record_key, "kind": kind}
+
+    def record_pending_paper_formats(
+        self, project_id: int, record_key: str
+    ) -> list[dict[str, Any]]:
+        """Paper formats a record is expected to have, for the completion
+        "đủ khổ" checklist.
+
+        Returns the base format (always assumed present) plus every extra
+        format marked present at assignment, each with a ``done`` flag set
+        when scan data (pages/files) already exists. The caller blocks
+        completion while any expected format is still unchecked, surfacing
+        "còn khổ nào chưa làm"."""
+        workflow = self.get_record_workflow(project_id, record_key)
+        result: list[dict[str, Any]] = []
+        for index, paper in enumerate(workflow.get("paper_statuses", [])):
+            status = str(paper.get("scan_status") or "").upper()
+            pages = int(paper.get("scan_pages", 0) or 0)
+            files = int(paper.get("scan_files", 0) or 0)
+            is_base = index == 0
+            present = (
+                is_base
+                or status in {"PENDING_SCAN", "SCANNED", "CHECKED"}
+                or pages > 0
+                or files > 0
+            )
+            if not present:
+                continue
+            result.append(
+                {
+                    "code": paper.get("code"),
+                    "display_name": paper.get("display_name"),
+                    "done": pages > 0 or files > 0 or status in {"SCANNED", "CHECKED"},
+                    "scan_pages": pages,
+                    "scan_files": files,
+                }
+            )
+        return result
 
     # ------------------------------------------------------------------
     # Audit and backup records

@@ -682,6 +682,7 @@ def _build_job_types_section(ctx) -> ft.Control:
         name_field: ft.TextField,
         enabled_field: ft.Checkbox,
         kind_field: ft.Dropdown,
+        off_app_field: ft.Checkbox,
     ) -> None:
         try:
             db.save_job_type(
@@ -693,6 +694,7 @@ def _build_job_types_section(ctx) -> ft.Control:
                     bool(enabled_field.value),
                     item.sort_order,
                     kind_field.value or "SCAN",
+                    bool(off_app_field.value),
                 )
             )
         except ValueError as exc:
@@ -716,6 +718,10 @@ def _build_job_types_section(ctx) -> ft.Control:
                 ft.dropdown.Option(key="CHECK", text="Giao check"),
             ],
         )
+        off_app_field = ft.Checkbox(
+            value=item.off_app,
+            tooltip="Việc không thực hiện qua app: không đo năng suất, sản lượng nhập tay",
+        )
         rows.append(
             ft.DataRow(
                 cells=[
@@ -723,12 +729,13 @@ def _build_job_types_section(ctx) -> ft.Control:
                     ft.DataCell(name_field),
                     ft.DataCell(kind_field),
                     ft.DataCell(enabled_field),
+                    ft.DataCell(off_app_field),
                     ft.DataCell(
                         ft.IconButton(
                             icon=ft.Icons.SAVE_OUTLINED,
                             tooltip="Lưu công việc",
-                            on_click=lambda _e, current=item, field=name_field, enabled=enabled_field, kind=kind_field: save_job(
-                                current, field, enabled, kind
+                            on_click=lambda _e, current=item, field=name_field, enabled=enabled_field, kind=kind_field, off_app=off_app_field: save_job(
+                                current, field, enabled, kind, off_app
                             ),
                         )
                     ),
@@ -742,6 +749,7 @@ def _build_job_types_section(ctx) -> ft.Control:
             ft.DataColumn(ft.Text("Tên hiển thị")),
             ft.DataColumn(ft.Text("Phân loại")),
             ft.DataColumn(ft.Text("Áp dụng")),
+            ft.DataColumn(ft.Text("Ngoài app")),
             ft.DataColumn(ft.Text("")),
         ],
         rows=rows,
@@ -749,7 +757,7 @@ def _build_job_types_section(ctx) -> ft.Control:
 
     return kit.section(
         "Cấu hình công việc",
-        "Admin đặt tên và phân loại (scan/check) các công việc dùng khi giao việc.",
+        "Admin đặt tên, phân loại (scan/check) và đánh dấu việc ngoài app (không năng suất) dùng khi giao việc.",
         ft.Column(
             spacing=10,
             controls=[

@@ -1,5 +1,5 @@
 #define AppName "Scan Backup Manager"
-#define AppVersion "1.0.0"
+#define AppVersion GetVersionNumbersString("..\dist\ScanBackupManager.exe")
 
 [Setup]
 AppId={{D629F4A3-29C8-46DD-A8F2-2D54A8B4F18A}

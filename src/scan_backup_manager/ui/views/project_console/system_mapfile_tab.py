@@ -125,6 +125,7 @@ def build(ctx) -> ft.Control:
     state.setdefault("page_size", DEFAULT_PAGE_SIZE)
     state.setdefault("column_weights", {})
     state.setdefault("column_widths", {})
+    state.setdefault("busy_actions", [])
     if int(state.get("page_size", DEFAULT_PAGE_SIZE)) not in PAGE_SIZE_OPTIONS:
         state["page_size"] = DEFAULT_PAGE_SIZE
     if not isinstance(state.get("column_weights"), dict):
@@ -254,6 +255,21 @@ def build(ctx) -> ft.Control:
         ctx.page.update()
         return True
 
+    def busy_key(action: str, record_key: str) -> str:
+        return f"{action}:{record_key}"
+
+    def action_is_busy(action: str, record_key: str) -> bool:
+        return busy_key(action, record_key) in set(state.get("busy_actions") or [])
+
+    def set_action_busy(action: str, record_key: str, busy: bool) -> None:
+        current = set(state.get("busy_actions") or [])
+        key = busy_key(action, record_key)
+        if busy:
+            current.add(key)
+        else:
+            current.discard(key)
+        state["busy_actions"] = sorted(current)
+
     def record_status_cell(record: dict) -> ft.DataCell:
         control = ft.Dropdown(
             dense=True,
@@ -289,13 +305,21 @@ def build(ctx) -> ft.Control:
             ctx.page.update()
 
     def backup_record(record: dict) -> None:
+        if action_is_busy("backup", record["record_key"]):
+            return
+        set_action_busy("backup", record["record_key"], True)
+        status_banner.value = f"Đang sao lưu hồ sơ {record['record_key']}..."
+        status_banner.color = ft.Colors.PRIMARY
+        ctx.page.update()
         try:
             result = ctx.backup.backup_record(ctx.project_id, record["record_key"])
         except (OSError, ValueError) as exc:
+            set_action_busy("backup", record["record_key"], False)
             status_banner.value = f"Không thể sao lưu hồ sơ {record['record_key']}: {exc}"
             status_banner.color = ft.Colors.ERROR
             ctx.page.update()
             return
+        set_action_busy("backup", record["record_key"], False)
         state["flash"] = (
             f"Đã sao lưu {result['processed']} file cho {record['record_key']} "
             f"({result['errors']} lỗi, {result['conflicts']} xung đột)."
@@ -304,13 +328,21 @@ def build(ctx) -> ft.Control:
         ctx.refresh()
 
     def record_check(record: dict) -> None:
+        if action_is_busy("check", record["record_key"]):
+            return
+        set_action_busy("check", record["record_key"], True)
+        status_banner.value = f"Đang ghi nhận check hồ sơ {record['record_key']}..."
+        status_banner.color = ft.Colors.PRIMARY
+        ctx.page.update()
         try:
             result = ctx.backup.backup_check_record(ctx.project_id, record["record_key"])
         except (OSError, ValueError) as exc:
+            set_action_busy("check", record["record_key"], False)
             status_banner.value = f"Không thể ghi nhận check {record['record_key']}: {exc}"
             status_banner.color = ft.Colors.ERROR
             ctx.page.update()
             return
+        set_action_busy("check", record["record_key"], False)
         state["flash"] = (
             f"Đã ghi nhận check {result['processed']} file cho {record['record_key']} "
             f"({result['errors']} lỗi, {result['conflicts']} xung đột)."
@@ -405,6 +437,27 @@ def build(ctx) -> ft.Control:
     )
     duplicate_filter.on_change = apply_filters
 
+    def summarize_records(record_rows: list[dict]) -> dict[str, object]:
+        paper_totals: dict[str, dict[str, int]] = {}
+        check_pages = 0
+        check_files = 0
+        for record_row in record_rows:
+            check_pages += int(record_row.get("check_pages", 0) or 0)
+            check_files += int(record_row.get("check_files", 0) or 0)
+            for paper_code, paper in (record_row.get("paper_statuses") or {}).items():
+                totals = paper_totals.setdefault(
+                    str(paper_code),
+                    {"scan_pages": 0, "scan_files": 0},
+                )
+                totals["scan_pages"] += int(paper.get("scan_pages", 0) or 0)
+                totals["scan_files"] += int(paper.get("scan_files", 0) or 0)
+        return {
+            "record_keys": [str(record_row["record_key"]) for record_row in record_rows],
+            "check_pages": check_pages,
+            "check_files": check_files,
+            "paper_totals": paper_totals,
+        }
+
     base_filters = {
         key: value
         for key, value in filters.items()
@@ -438,9 +491,7 @@ def build(ctx) -> ft.Control:
         ]
         total_rows = len(filtered_records)
         records = filtered_records[page_index * page_size : (page_index + 1) * page_size]
-        records_summary = ctx.db.get_system_records_summary(
-            ctx.project_id, search=state["search"], filters=base_filters
-        )
+        records_summary = summarize_records(filtered_records)
     else:
         records, total_rows = ctx.db.list_system_records_page(
             ctx.project_id,
@@ -849,53 +900,202 @@ def build(ctx) -> ft.Control:
             for code, checkbox in checkboxes.items()
         }
 
-    def backup_completed_previous(completed_previous: list[dict]) -> None:
-        for previous in completed_previous:
-            try:
-                if previous["kind"] == "CHECK":
-                    ctx.backup.backup_check_record(ctx.project_id, previous["record_key"])
-                else:
-                    ctx.backup.backup_record(ctx.project_id, previous["record_key"])
-            except Exception as exc:  # noqa: BLE001 - per-record resilience: audit and continue
-                ctx.db.record_audit(
-                    "ASSIGNMENT_PREVIOUS_BACKUP_ERROR",
-                    str(exc),
-                    project_id=ctx.project_id,
-                )
-
     def copy_backup_files_for_check(record_key: str, target_folder: Path) -> int:
-        rows = ctx.db.list_backup_files_for_record(
+        return copy_record_backup_files_for_check(
+            ctx.db,
             ctx.project_id,
             record_key,
-            statuses=COUNTABLE_BACKUP_STATUSES,
-            file_kind="SCAN",
+            target_folder,
         )
-        if not rows:
-            raise ValueError("Chưa có dữ liệu backup để copy sang thư mục check.")
-        copied = 0
-        target_folder.mkdir(parents=True, exist_ok=True)
-        for row in rows:
-            source = Path(row["dest_path"])
-            if not source.exists():
-                source = Path(row["source_path"])
-            if not source.exists() or not source.is_file():
-                continue
-            relative_path = str(row["relative_project_path"] or "").replace("\\", "/").strip("/")
-            suffix = ""
-            normalized_key = record_key.replace("\\", "/").strip("/")
-            if relative_path == normalized_key:
-                suffix = source.name
-            elif relative_path.startswith(f"{normalized_key}/"):
-                suffix = relative_path[len(normalized_key) + 1 :]
+
+    def build_open_tasks_section(personnel_dropdown: ft.Dropdown, *, ready):
+        """Live "việc đang mở của nhân sự" panel for the assignment dialogs.
+
+        Rebuilds whenever the chosen person changes. Each open task offers a
+        "Hoàn thành" action that opens the "đủ khổ" checklist inline; on
+        confirm the task is closed and its data backed up to the server. The
+        person can only receive new work once this panel is empty (enforced by
+        the dialog's submit through ``has_open_tasks``)."""
+        panel = ft.Column(spacing=8, tight=True)
+
+        def selected_person_id() -> int | None:
+            try:
+                return int(personnel_dropdown.value) if personnel_dropdown.value else None
+            except (TypeError, ValueError):
+                return None
+
+        def has_open_tasks() -> bool:
+            person_id = selected_person_id()
+            if person_id is None:
+                return False
+            return bool(ctx.db.list_open_tasks_for_assignee(ctx.project_id, person_id))
+
+        def build_open_task_row(task: dict, on_change) -> ft.Control:
+            checklist_column = ft.Column(spacing=4, tight=True, visible=False)
+            row_error = ft.Text("", color=DANGER, size=11)
+            checkboxes: list[tuple[dict, ft.Checkbox]] = []
+            built = {"value": False}
+
+            def confirm(_event=None) -> None:
+                missing = [item["code"] for item, box in checkboxes if not box.value]
+                if missing:
+                    row_error.value = "Còn khổ chưa làm: " + ", ".join(missing)
+                    ctx.page.update()
+                    return
+                # Back up first, then close the task. Backing up is what
+                # advances the record status (check counts flip PENDING_CHECK →
+                # COMPLETED, scan counts advance the workflow). If it fails
+                # (e.g. the check folder has no files yet) the task must stay
+                # open so the record status is never left behind a "completed"
+                # task.
+                try:
+                    if task["kind"] == "CHECK":
+                        ctx.backup.backup_check_record(ctx.project_id, task["record_key"])
+                    else:
+                        ctx.backup.backup_record(ctx.project_id, task["record_key"])
+                    ctx.db.complete_task(ctx.project_id, task["task_id"])
+                except (ValueError, OSError) as exc:
+                    row_error.value = f"Không thể hoàn thành: {exc}"
+                    ctx.page.update()
+                    return
+                # Rebuild the open-tasks panel so the finished task drops off,
+                # then refresh the mapfile table behind the dialog so the
+                # record's status column reflects the new state right away.
+                state["flash"] = f"Đã hoàn thành và backup hồ sơ {task['record_key']}."
+                on_change()
+                ctx.refresh()
+
+            def toggle_checklist(_event=None) -> None:
+                if not built["value"]:
+                    controls: list[ft.Control] = []
+                    if task["kind"] != "CHECK":
+                        pending = ctx.db.record_pending_paper_formats(
+                            ctx.project_id, task["record_key"]
+                        )
+                        for item in pending:
+                            detail = (
+                                f" ({item['scan_pages']} trang · {item['scan_files']} file)"
+                                if item["done"]
+                                else " (chưa có dữ liệu)"
+                            )
+                            box = ft.Checkbox(
+                                label=f"Đã đủ khổ {item['code']}{detail}",
+                                value=bool(item["done"]),
+                            )
+                            checkboxes.append((item, box))
+                        if checkboxes:
+                            controls.append(
+                                ft.Text(
+                                    "Tích các khổ đã làm xong — còn khổ chưa tích sẽ bị chặn:",
+                                    size=11,
+                                    color=TEXT_MUTED,
+                                )
+                            )
+                            controls.extend(box for _item, box in checkboxes)
+                        else:
+                            controls.append(
+                                ft.Text("Hồ sơ chỉ có khổ cơ bản.", size=11, color=TEXT_MUTED)
+                            )
+                    else:
+                        controls.append(
+                            ft.Text(
+                                "Hoàn thành việc check và backup kết quả về máy chủ.",
+                                size=11,
+                                color=TEXT_MUTED,
+                            )
+                        )
+                    controls.append(row_error)
+                    controls.append(
+                        kit.primary_button(
+                            "Hoàn thành & backup",
+                            icon=ft.Icons.CLOUD_UPLOAD,
+                            on_click=confirm,
+                        )
+                    )
+                    checklist_column.controls = controls
+                    built["value"] = True
+                checklist_column.visible = not checklist_column.visible
+                ctx.page.update()
+
+            kind_label = "Check" if task["kind"] == "CHECK" else "Scan"
+            header = ft.Row(
+                alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
+                vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                controls=[
+                    ft.Column(
+                        spacing=1,
+                        tight=True,
+                        expand=True,
+                        controls=[
+                            ft.Text(
+                                f"[{kind_label}] {task['title']}",
+                                size=12,
+                                weight=ft.FontWeight.W_600,
+                                max_lines=1,
+                            ),
+                            ft.Text(
+                                record_level_label(task["record_key"]),
+                                size=11,
+                                color=TEXT_MUTED,
+                                max_lines=1,
+                            ),
+                        ],
+                    ),
+                    kit.ghost_button(
+                        "Hoàn thành",
+                        icon=ft.Icons.TASK_ALT,
+                        on_click=toggle_checklist,
+                    ),
+                ],
+            )
+            return ft.Container(
+                padding=8,
+                border_radius=8,
+                border=ft.Border.all(1, ft.Colors.with_opacity(0.22, WARNING)),
+                bgcolor=ft.Colors.with_opacity(0.05, WARNING),
+                content=ft.Column(spacing=6, tight=True, controls=[header, checklist_column]),
+            )
+
+        def rebuild(_event=None) -> None:
+            person_id = selected_person_id()
+            if person_id is None:
+                controls: list[ft.Control] = [
+                    ft.Text("Chọn nhân sự để xem việc đang giao trước đó.", color=TEXT_MUTED, size=12)
+                ]
             else:
-                suffix = source.name
-            target_path = target_folder / Path(suffix)
-            target_path.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(source, target_path)
-            copied += 1
-        if copied == 0:
-            raise ValueError("Không tìm thấy file backup hợp lệ để copy sang thư mục check.")
-        return copied
+                tasks = ctx.db.list_open_tasks_for_assignee(ctx.project_id, person_id)
+                if not tasks:
+                    controls = [
+                        ft.Row(
+                            spacing=6,
+                            vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                            controls=[
+                                ft.Icon(ft.Icons.CHECK_CIRCLE, color=SUCCESS, size=16),
+                                ft.Text(
+                                    "Nhân sự không còn việc đang mở — có thể giao việc mới.",
+                                    color=SUCCESS,
+                                    size=12,
+                                ),
+                            ],
+                        )
+                    ]
+                else:
+                    controls = [
+                        ft.Text(
+                            f"Nhân sự đang có {len(tasks)} việc chưa hoàn thành. "
+                            "Phải bấm Hoàn thành từng việc (backup về máy chủ) trước khi giao việc mới:",
+                            color=WARNING,
+                            size=12,
+                            weight=ft.FontWeight.W_600,
+                        )
+                    ]
+                    controls.extend(build_open_task_row(task, rebuild) for task in tasks)
+            panel.controls = controls
+            if ready():
+                ctx.page.update()
+
+        personnel_dropdown.on_change = rebuild
+        return panel, rebuild, has_open_tasks
 
     def open_setup_dialog(record: dict) -> None:
         parts = [part for part in record["record_key"].replace("\\", "/").split("/") if part]
@@ -933,9 +1133,9 @@ def build(ctx) -> ft.Control:
                 if client.enabled
             ],
         )
-        finish_previous_checkbox = ft.Checkbox(
-            label="Chốt việc cũ của nhân sự và sao lưu trước khi giao việc mới",
-            value=False,
+        setup_ready = {"value": False}
+        open_tasks_panel, refresh_open_tasks, has_open_tasks = build_open_tasks_section(
+            personnel_dropdown, ready=lambda: setup_ready["value"]
         )
         presence_checkboxes = build_presence_checkboxes(record)
         error_text = ft.Text("", color=DANGER)
@@ -952,6 +1152,14 @@ def build(ctx) -> ft.Control:
                 error_text.value = "Cần chọn đủ công việc, nhân sự và máy trạm."
                 ctx.page.update()
                 return
+            if has_open_tasks():
+                error_text.value = (
+                    "Nhân sự đang có việc chưa hoàn thành. Bấm Hoàn thành cho từng "
+                    "việc cũ (sẽ backup về máy chủ) trước khi giao việc mới."
+                )
+                refresh_open_tasks()
+                ctx.page.update()
+                return
             job = next((item for item in job_types if item.job_code == job_code), None)
             person = next((item for item in personnel if item.id == personnel_id), None)
             if not job or not person:
@@ -963,13 +1171,6 @@ def build(ctx) -> ft.Control:
             kind = assignment_kind(job)
             record_key = "/".join(parts)
             try:
-                completed_previous = []
-                if finish_previous_checkbox.value and personnel_id is not None:
-                    completed_previous = ctx.db.complete_open_tasks_for_assignee(
-                        ctx.project_id,
-                        personnel_id,
-                    )
-                    backup_completed_previous(completed_previous)
                 target = ctx.mapfiles.create_client_record_folder(
                     ctx.project_id,
                     client_code,
@@ -1016,8 +1217,6 @@ def build(ctx) -> ft.Control:
                 return
             ctx.page.pop_dialog()
             extras = []
-            if completed_previous:
-                extras.append(f"đã chốt/backup {len(completed_previous)} việc cũ")
             if copied_for_check:
                 extras.append(f"đã copy {copied_for_check} file sang thư mục check")
             suffix = f" ({'; '.join(extras)})" if extras else ""
@@ -1033,7 +1232,8 @@ def build(ctx) -> ft.Control:
                 controls=[
                     ft.Text("/".join(parts), color=TEXT_MUTED),
                     ft.Row([job_dropdown, personnel_dropdown, client_dropdown], wrap=True, spacing=8),
-                    finish_previous_checkbox,
+                    ft.Text("Việc đang mở của nhân sự", size=12, weight=ft.FontWeight.W_600),
+                    open_tasks_panel,
                     *presence_checkboxes.values(),
                     error_text,
                 ],
@@ -1046,6 +1246,8 @@ def build(ctx) -> ft.Control:
             width=900,
         )
         ctx.page.show_dialog(dialog)
+        setup_ready["value"] = True
+        refresh_open_tasks()
 
     def open_edit_record_dialog(record: dict) -> None:
         current_parts = [
@@ -1304,9 +1506,8 @@ def build(ctx) -> ft.Control:
                 if client.enabled
             ],
         )
-        finish_previous_checkbox = ft.Checkbox(
-            label="Chốt việc cũ của nhân sự và sao lưu trước khi giao việc mới",
-            value=False,
+        open_tasks_panel, refresh_open_tasks, has_open_tasks = build_open_tasks_section(
+            personnel_dropdown, ready=lambda: dialog_ready["value"]
         )
         presence_checkboxes = build_presence_checkboxes()
         presence_panel = ft.Column(
@@ -1423,22 +1624,20 @@ def build(ctx) -> ft.Control:
 
         job_dropdown.on_change = refresh_mode
 
-        def complete_previous_if_needed(personnel_id: int) -> list[dict]:
-            if not finish_previous_checkbox.value:
-                return []
-            completed_previous = ctx.db.complete_open_tasks_for_assignee(
-                ctx.project_id,
-                personnel_id,
-            )
-            backup_completed_previous(completed_previous)
-            return completed_previous
-
         def submit(_submit_event=None) -> None:
             job_code = job_dropdown.value or ""
             personnel_id = int(personnel_dropdown.value) if personnel_dropdown.value else None
             client_code = client_dropdown.value or ""
             if not job_code or personnel_id is None or not client_code:
                 error_text.value = "Cần chọn đủ công việc, nhân sự và máy trạm."
+                ctx.page.update()
+                return
+            if has_open_tasks():
+                error_text.value = (
+                    "Nhân sự đang có việc chưa hoàn thành. Bấm Hoàn thành cho từng "
+                    "việc cũ (sẽ backup về máy chủ) trước khi giao việc mới."
+                )
+                refresh_open_tasks()
                 ctx.page.update()
                 return
             job = current_job()
@@ -1454,7 +1653,6 @@ def build(ctx) -> ft.Control:
             copied_for_check = 0
             targets: list[Path] = []
             try:
-                completed_previous = complete_previous_if_needed(personnel_id)
                 if assignment_kind(job) == "check":
                     refresh_mode()
                     if not check_records_loaded["value"]:
@@ -1564,8 +1762,6 @@ def build(ctx) -> ft.Control:
                 return
             ctx.page.pop_dialog()
             extras = []
-            if completed_previous:
-                extras.append(f"đã chốt/backup {len(completed_previous)} việc cũ")
             if copied_for_check:
                 extras.append(f"đã copy {copied_for_check} file sang thư mục check")
             suffix = f" ({'; '.join(extras)})" if extras else ""
@@ -1583,11 +1779,13 @@ def build(ctx) -> ft.Control:
                 scroll=ft.ScrollMode.AUTO,
                 controls=[
                     ft.Text(
-                        "Scan: thêm nhiều dòng mapfile trong một lần giao. Check: chọn hồ sơ đang chờ check.",
+                        "Scan: thêm nhiều dòng mapfile trong một lần giao. Check: chọn hồ sơ đang chờ check. "
+                        "Mỗi nhân sự chỉ nhận việc mới khi đã hoàn thành hết việc đang mở.",
                         color=TEXT_MUTED,
                     ),
                     ft.Row([job_dropdown, personnel_dropdown, client_dropdown], wrap=True, spacing=8),
-                    finish_previous_checkbox,
+                    ft.Text("Việc đang mở của nhân sự", size=12, weight=ft.FontWeight.W_600),
+                    open_tasks_panel,
                     presence_panel,
                     scan_rows_panel,
                     check_records_panel,
@@ -1604,6 +1802,7 @@ def build(ctx) -> ft.Control:
         refresh_mode()
         ctx.page.show_dialog(dialog)
         dialog_ready["value"] = True
+        refresh_open_tasks()
 
     def readonly_metric_box(label: str, value: int | str, color: str, width: int) -> ft.Control:
         return ft.Container(
@@ -1880,12 +2079,14 @@ def build(ctx) -> ft.Control:
                             ft.IconButton(
                                 icon=ft.Icons.BACKUP_OUTLINED,
                                 tooltip="Sao luu ho so",
+                                disabled=action_is_busy("backup", record["record_key"]),
                                 on_click=lambda _e, current=record: backup_record(
                                     current
                                 ),
                             ),
                             ft.IconButton(
                                 icon=ft.Icons.FACT_CHECK_OUTLINED,
+                                disabled=action_is_busy("check", record["record_key"]),
                                 tooltip="Ghi nhận check",
                                 on_click=lambda _e, current=record: record_check(
                                     current

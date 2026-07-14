@@ -545,7 +545,7 @@ def _build_mausham_sheet(
 
     row = 4
     for personnel_id in sorted(people, key=lambda pid: person_name.get(pid, ("", ""))[1]):
-        jobs = people[personnel_id]
+        jobs = _group_jobs_by_type(people[personnel_id])
         code, name = person_name.get(personnel_id, ("", ""))
         top, bottom = row, row + _MAUSHAM_JOB_SLOTS - 1
         sheet.merge_cells(f"A{top}:A{bottom}")
@@ -559,12 +559,38 @@ def _build_mausham_sheet(
             sheet.cell(row=r, column=3, value=f"Công việc {slot + 1}").alignment = left
             job = jobs[slot] if slot < len(jobs) else None
             if job is not None:
-                hours = job["work_hours"] or 0
+                hours = job["hours"] or 0
                 sheet.cell(row=r, column=4, value=hours if hours else None).alignment = center
                 sheet.cell(row=r, column=5, value=job["attendance_type"] or None).alignment = center
-                sheet.cell(row=r, column=6, value=job["job_content"] or job["job_title"]).alignment = left
-                sheet.cell(row=r, column=7, value=job["quantity"]).alignment = center
+                sheet.cell(row=r, column=6, value=job["name"]).alignment = left
+                sheet.cell(row=r, column=7, value=job["volume"] or None).alignment = center
             for col in range(1, 8):
                 sheet.cell(row=r, column=col).border = _BORDER
         row = bottom + 1
 
+
+def _group_jobs_by_type(entries: list) -> list[dict]:
+    """Collapse a person's attendance rows into one entry per distinct job type
+    (MauChamCong "Công việc" slot): the output volume is summed across every
+    record of the job type, hours/type come from the first row (all rows of a
+    slot share them after the leader saves)."""
+    grouped: dict[str, dict] = {}
+    order: list[str] = []
+    for entry in entries:
+        name = (entry["job_content"] or entry["job_title"] or "").strip()
+        key = (entry["job_title"] or entry["job_content"] or "").strip().casefold()
+        if key not in grouped:
+            grouped[key] = {
+                "name": name,
+                "hours": entry["work_hours"] or 0,
+                "attendance_type": entry["attendance_type"] or None,
+                "volume": int(entry["quantity"] or 0),
+            }
+            order.append(key)
+        else:
+            grouped[key]["volume"] += int(entry["quantity"] or 0)
+            if not grouped[key]["hours"] and (entry["work_hours"] or 0):
+                grouped[key]["hours"] = entry["work_hours"]
+            if not grouped[key]["attendance_type"] and entry["attendance_type"]:
+                grouped[key]["attendance_type"] = entry["attendance_type"]
+    return [grouped[key] for key in order]

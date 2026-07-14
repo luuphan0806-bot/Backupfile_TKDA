@@ -88,12 +88,12 @@ def _open_import_project_database(shell) -> None:
             allow_multiple=False,
             allowed_extensions=["sqlite3", "sqlite", "db"],
         )
-        if not result or not result.files:
+        if not result:
             return
         try:
-            project_id = shell.db.import_project_database(Path(result.files[0].path))
+            project_id = shell.db.import_project_database(Path(result[0].path))
         except ValueError as exc:
-            shell.page.open(
+            shell.page.show_dialog(
                 kit.dialog(
                     "Không load được dự án",
                     ft.Text(str(exc), color=ft.Colors.ERROR),
@@ -192,7 +192,7 @@ def build(shell) -> ft.Control:
                     ),
                 ],
             ),
-            padding=16, radius=12,
+            padding=16, radius=8,
         )
 
     if projects:

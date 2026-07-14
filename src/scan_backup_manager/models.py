@@ -83,6 +83,10 @@ class JobType:
     enabled: bool = True
     sort_order: int = 0
     job_kind: str = "SCAN"
+    # Work not performed through the app (e.g. manual/offline tasks): no
+    # automatic output volume is captured and productivity is not measured;
+    # the leader may still enter the volume by hand.
+    off_app: bool = False
 
 
 @dataclass(slots=True)

@@ -1,6 +1,6 @@
 [project]
 name = "scan-backup-manager"
-version = "0.1.0"
+version = "1.0.0"
 description = "Windows server-side scan backup manager for SMB workstations."
 readme = "README.md"
 # 3.12 is the recommended packaging target for the Flet EXE.
